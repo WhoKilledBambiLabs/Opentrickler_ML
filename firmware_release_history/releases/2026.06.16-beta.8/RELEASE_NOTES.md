@@ -1,14 +1,14 @@
 # 2026.06.16-beta.8
 
-Status: early beta, private validation in progress.
+Status: early public beta, validation in progress.
 
 ## Purpose
 
-Beta 8 improves final recovery behavior after private beta testing showed that some charges could stop meaningfully under target while other fast throws finished slightly high.
+Beta 8 improves final recovery behavior after beta testing showed that some charges could stop meaningfully under target while other fast throws finished slightly high.
 
 ## Data Reviewed
 
-- Private beta RL17 recovery and coarse-top-up sessions.
+- Beta RL17 recovery and coarse-top-up sessions.
 - Live REST status after beta OTA validation.
 - Code audit of final recovery, fine tail telemetry, and runtime learning.
 
@@ -33,7 +33,7 @@ Beta 8 improves final recovery behavior after private beta testing showed that s
 ## Test Status
 
 - Built successfully for Pico 2 W release.
-- Private OTA validation completed successfully.
+- OTA validation completed successfully.
 - Device-reported version matched `2026.06.16-beta.8` after reboot.
 - Additional powder verification remains required before wider release.
 

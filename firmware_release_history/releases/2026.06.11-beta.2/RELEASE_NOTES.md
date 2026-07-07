@@ -1,16 +1,16 @@
 # 2026.06.11-beta.2 Release Notes
 
-Status: installed private beta, pending broader powder validation.
+Status: installed beta, pending broader powder validation.
 
 ## Purpose
 
-This release corrects learning contamination and recovery behavior observed during private steering-beta testing. It keeps the strong late-session accuracy while targeting shorter recovery and eliminating settled undercharge exits.
+This release corrects learning contamination and recovery behavior observed during steering-beta testing. It keeps the strong late-session accuracy while targeting shorter recovery and eliminating settled undercharge exits.
 
 Beta.2 superseded beta.1 before powder testing. A final control-flow audit found that beta.1 could repeatedly settle with the motor off when active recovery was slightly under target.
 
 ## Baseline Summary
 
-- 77 production charges reviewed from private beta telemetry.
+- 77 production charges reviewed from beta telemetry.
 - 47 good, 27 over, and 3 under at +/-0.0205 gn.
 - 10.71 second average and 10.36 second median.
 - 33 charges at or below 10 seconds.
@@ -64,7 +64,7 @@ Beta.2 superseded beta.1 before powder testing. A final control-flow audit found
 - Historical telemetry replay kept the corrected production result stable.
 - Replay rejected 345 cup/touch artifacts.
 - Binary release identity reported `2026.06.11-beta.2`.
-- OTA and post-reboot checks passed in private testing.
+- OTA and post-reboot checks passed in beta testing.
 
 ## Known Risks
 
@@ -77,7 +77,7 @@ Beta.2 superseded beta.1 before powder testing. A final control-flow audit found
 
 - Confirm that no stable undercharge asks for cup removal before recovery.
 - Watch slight under-target recovery for continuous progress.
-- Compare recovery motor-on time against the previous private baseline.
+- Compare recovery motor-on time against the previous beta baseline.
 - Confirm coarse handoff moves toward the target-minus-2.5-percent region.
 - Watch for delayed fast-fine tail larger than 0.20 gn.
 - Confirm good/red display status follows the final stable post-finish weight.

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OpenTrickler ML Firmware</title>
-  <meta name="description" content="Private beta documentation for the OpenTrickler Pico 2 W / RP2350 ML firmware branch.">
+  <meta name="description" content="Public beta documentation for the OpenTrickler Pico 2 W / RP2350 ML firmware branch.">
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -14,7 +14,7 @@
         <span class="brand-mark">OT</span>
         <span>
           <strong>OpenTrickler ML Firmware</strong>
-          <small>Pico 2 W / RP2350 private beta</small>
+          <small>Pico 2 W / RP2350 public beta</small>
         </span>
       </a>
       <div class="nav-links">
@@ -32,7 +32,7 @@
     <section class="hero section-band">
       <div class="section-inner hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">Current private beta: 2026.06.16-beta.8</p>
+          <p class="eyebrow">Current public beta: 2026.06.16-beta.8</p>
           <h1>Adaptive OpenTrickler firmware for profile-aware powder flow learning.</h1>
           <p class="lede">
             This branch adds flow characterization, machine calibration, runtime learning, steering controls,
@@ -45,7 +45,7 @@
           <dl class="hero-stats" aria-label="Firmware summary">
             <div><dt>Target</dt><dd>Pico 2 W / RP2350</dd></div>
             <div><dt>Interface</dt><dd>Mini 12864, Wi-Fi, REST</dd></div>
-            <div><dt>Status</dt><dd>Early private beta</dd></div>
+            <div><dt>Status</dt><dd>Early public beta</dd></div>
           </dl>
         </div>
         <figure class="device-panel">
@@ -75,10 +75,10 @@
           </p>
         </div>
         <div>
-          <h2>Private For Now</h2>
+          <h2>Public Beta Release</h2>
           <p>
-            Keep the repository private while firmware behavior, safety notes, and release packaging are being
-            reviewed. Do not enable public GitHub Pages until the beta is ready for external release.
+            This release is public so builders can inspect the source, download the UF2, and test carefully.
+            Treat it as early beta firmware until more powder validation is complete.
           </p>
         </div>
       </div>
@@ -126,7 +126,7 @@
           </article>
           <article class="feature-card">
             <h3>Clean beta repo</h3>
-            <p>Private logs, raw captures, collector tooling, generated binaries, and comparison dumps are excluded.</p>
+            <p>Field logs, raw captures, collector tooling, generated binaries, and comparison dumps are excluded.</p>
           </article>
         </div>
       </div>
@@ -551,7 +551,7 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
             <h3>Test status</h3>
             <ul>
               <li>Pico 2 W release build passes locally.</li>
-              <li>Private OTA verification was completed during beta testing.</li>
+              <li>OTA verification was completed during beta testing.</li>
               <li>Device-reported version matched <code>2026.06.16-beta.8</code> after reboot.</li>
               <li>Additional powder verification remains tracked in the issue ledger.</li>
             </ul>
@@ -568,7 +568,7 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
         </div>
         <div class="repo-grid">
           <div><code>.github/workflows/</code><span>Firmware build automation for Pico 2 W / RP2350.</span></div>
-          <div><code>docs/</code><span>This GitHub Pages-ready private beta documentation site.</span></div>
+          <div><code>docs/</code><span>This GitHub Pages-ready public beta documentation site.</span></div>
           <div><code>firmware_release_history/</code><span>Public-safe changelog, issue ledger, and release notes only.</span></div>
           <div><code>library/</code><span>Embedded library and submodule content used by the firmware.</span></div>
           <div><code>manuals/</code><span>Original flashing, wireless, and scale setup material.</span></div>
@@ -596,7 +596,7 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
         <div class="feature-grid">
           <article class="feature-card">
             <h3>No raw telemetry</h3>
-            <p>Private flight logs, charge CSVs, REST captures, and local test-session folders are ignored.</p>
+            <p>Beta flight logs, charge CSVs, REST captures, and local test-session folders are ignored.</p>
           </article>
           <article class="feature-card">
             <h3>No collector app</h3>
@@ -607,8 +607,8 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
             <p>Firmware binaries are produced by local builds or GitHub Actions, not committed to release history.</p>
           </article>
           <article class="feature-card">
-            <h3>No private network details</h3>
-            <p>Personal LAN addresses and private session paths are removed from user-facing documentation.</p>
+            <h3>No personal network details</h3>
+            <p>Personal LAN addresses and local session paths are removed from user-facing documentation.</p>
           </article>
         </div>
       </div>
@@ -617,8 +617,8 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
 
   <footer class="site-footer">
     <div class="section-inner footer-grid">
-      <p>OpenTrickler ML Firmware private beta documentation.</p>
-      <p>Keep private until beta behavior, safety notes, and release packaging are reviewed.</p>
+      <p>OpenTrickler ML Firmware public beta documentation.</p>
+      <p>Pico 2 W / RP2350 only. Verify every charge and keep a rollback UF2 available.</p>
     </div>
   </footer>
 </body>
