@@ -27,7 +27,7 @@
 - Accelerated convergence from inflated characterization coarse-tail estimates.
 - Added explicit release identity to display and REST system information.
 - Corrected telemetry scoring for cup-lift artifacts and settled undercharges.
-- Added production median, speed bands, mean error, recovery use, and stall metrics to private analysis output.
+- Added production median, speed bands, mean error, recovery use, and stall metrics to beta analysis output.
 - Superseded by beta.2 after a code audit found a slight-under-target recovery dead zone.
 
 ## 2026.06.01 Steering Beta - Reconstructed
@@ -47,6 +47,6 @@ Exact source identity is unavailable because this version was not committed.
 
 Exact source identity is unavailable because this version was not committed.
 
-## Earlier AI Development - Private Evidence Only
+## Earlier AI Development - Validation Evidence Only
 
-April and May 2026 private testing covered the progression from pulsed fine finishing through undercharge healing, machine calibration, OTA safety fixes, runtime guards, tail-safe control, and coarse trim glide. Raw test data is intentionally not committed to this repository.
+April and May 2026 beta testing covered the progression from pulsed fine finishing through undercharge healing, machine calibration, OTA safety fixes, runtime guards, tail-safe control, and coarse trim glide. Raw test data is intentionally not committed to this repository.

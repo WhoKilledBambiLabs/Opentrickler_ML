@@ -1,6 +1,6 @@
 # OpenTrickler ML Firmware
 
-Private beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 controller, with profile-aware flow characterization, machine calibration, runtime learning, steering controls, REST status endpoints, and OTA staging.
+Public beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 controller, with profile-aware flow characterization, machine calibration, runtime learning, steering controls, REST status endpoints, and OTA staging.
 
 > Early beta: this firmware controls reloading equipment. Verify every charge with a calibrated scale, supervise all operation, and keep a known-good UF2 rollback image available.
 
@@ -9,7 +9,7 @@ Private beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 contro
 - Current beta identity: `2026.06.16-beta.8`
 - Supported controller: Raspberry Pi Pico 2 W / RP2350 only
 - Unsupported controller: Raspberry Pi Pico W / RP2040
-- Repository status: private beta, not ready for broad public release
+- Repository status: public beta, early release
 - Documentation site: [docs/index.html](docs/index.html)
 
 ## Pico 2 W / RP2350 Only
@@ -155,7 +155,7 @@ Use USB rollback if OTA fails, Wi-Fi is unstable, or the version cannot be verif
 ## Repository Map
 
 - `.github/workflows/cmake.yml`: GitHub Actions firmware build for Pico 2 W / RP2350.
-- `docs/`: GitHub Pages-ready private beta documentation.
+- `docs/`: GitHub Pages-ready public beta documentation.
 - `firmware_release_history/`: public-safe changelog, issue ledger, and release notes.
 - `library/`: embedded libraries and submodule content.
 - `manuals/`: original flashing, wireless, and scale setup material.
