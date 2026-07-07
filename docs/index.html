@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OpenTrickler ML Firmware</title>
-  <meta name="description" content="Private beta documentation for the OpenTrickler RP2040 and RP2350 ML firmware branch.">
+  <meta name="description" content="Private beta documentation for the OpenTrickler Pico 2 W / RP2350 ML firmware branch.">
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -14,7 +14,7 @@
         <span class="brand-mark">OT</span>
         <span>
           <strong>OpenTrickler ML Firmware</strong>
-          <small>RP2040 / RP2350 private beta</small>
+          <small>Pico 2 W / RP2350 private beta</small>
         </span>
       </a>
       <div class="nav-links">
@@ -36,14 +36,14 @@
           <h1>Adaptive OpenTrickler firmware for profile-aware powder flow learning.</h1>
           <p class="lede">
             This branch adds flow characterization, machine calibration, runtime learning, steering controls,
-            REST status endpoints, and OTA staging to the OpenTrickler RP2040/RP2350 controller.
+            REST status endpoints, and OTA staging to the OpenTrickler Pico 2 W / RP2350 controller.
           </p>
           <div class="hero-actions" aria-label="Page shortcuts">
             <a class="button primary" href="#install">Flash firmware</a>
             <a class="button secondary" href="#characterization">Run characterization</a>
           </div>
           <dl class="hero-stats" aria-label="Firmware summary">
-            <div><dt>Targets</dt><dd>Pico W, Pico 2 W</dd></div>
+            <div><dt>Target</dt><dd>Pico 2 W / RP2350</dd></div>
             <div><dt>Interface</dt><dd>Mini 12864, Wi-Fi, REST</dd></div>
             <div><dt>Status</dt><dd>Early private beta</dd></div>
           </dl>
@@ -65,6 +65,13 @@
           <p>
             This firmware controls reloading equipment. Verify every charge with a calibrated scale, supervise
             all motor activity, and keep a known-good UF2 available for rollback.
+          </p>
+        </div>
+        <div>
+          <h2>Pico 2 W Only</h2>
+          <p>
+            This ML beta does not support Pico W / RP2040. The AI, REST, OTA, web portal, scale-driver,
+            and runtime-learning feature set exceeds the RP2040 256 KB RAM budget; RP2350 provides 512 KB.
           </p>
         </div>
         <div>
@@ -131,9 +138,10 @@
           <p class="eyebrow">Compatibility</p>
           <h2>Hardware And Scale Support</h2>
           <p>
-            The codebase builds for Raspberry Pi Pico W and Pico 2 W boards and targets OpenTrickler controller
+            The codebase builds only for Raspberry Pi Pico 2 W / RP2350 and targets OpenTrickler controller
             hardware with stepper-driven coarse/fine tricklers, optional servo gate, NeoPixel status, and the
-            mini 12864 display.
+            mini 12864 display. Pico W / RP2040 is intentionally disabled because the firmware no longer fits
+            within its 256 KB RAM budget.
           </p>
           <ul class="check-list">
             <li>2.4 GHz Wi-Fi only, with AP mode for first-time setup.</li>
@@ -168,7 +176,7 @@
           <article class="step-card">
             <span class="step-number">2</span>
             <h3>Enter BOOTSEL</h3>
-            <p>Hold BOOTSEL on the Pico W or Pico 2 W while connecting micro USB.</p>
+            <p>Hold BOOTSEL on the Pico 2 W while connecting micro USB.</p>
           </article>
           <article class="step-card">
             <span class="step-number">3</span>
@@ -482,7 +490,8 @@
           <h2>Build From Source</h2>
           <p>
             Use the Raspberry Pi Pico SDK toolchain, CMake, Ninja, Git, Python 3, and repository submodules.
-            The Pico 2 W release build is the current beta baseline.
+            Pico 2 W / RP2350 is the only supported beta target. A Pico W / RP2040 configure attempt fails
+            immediately because the current firmware exceeds the RP2040 RAM budget.
           </p>
         </div>
         <div class="command-grid">
@@ -500,11 +509,6 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
           <div>
             <h3>Build firmware</h3>
             <pre><code>cmake --build build-pico2w-release --config Release</code></pre>
-          </div>
-          <div>
-            <h3>Configure Pico W release</h3>
-            <pre><code>.\configure_env.ps1
-cmake -B build-picow-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=pico_w</code></pre>
           </div>
         </div>
         <p class="small-note">
@@ -563,7 +567,7 @@ cmake -B build-picow-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=pi
           <h2>Where Things Live</h2>
         </div>
         <div class="repo-grid">
-          <div><code>.github/workflows/</code><span>Firmware build automation for Pico W and Pico 2 W.</span></div>
+          <div><code>.github/workflows/</code><span>Firmware build automation for Pico 2 W / RP2350.</span></div>
           <div><code>docs/</code><span>This GitHub Pages-ready private beta documentation site.</span></div>
           <div><code>firmware_release_history/</code><span>Public-safe changelog, issue ledger, and release notes only.</span></div>
           <div><code>library/</code><span>Embedded library and submodule content used by the firmware.</span></div>

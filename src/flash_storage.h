@@ -6,7 +6,7 @@
 #include <stdbool.h>
 
 // Flash Storage Configuration
-// Pico W has 2MB flash. Reserve last 8KB for persistent ML history storage.
+// Reserve the end of the primary firmware slot for persistent ML history storage.
 //
 // Note: FLASH_SECTOR_SIZE is 4KB, FLASH_PAGE_SIZE is 256 bytes
 // flash_range_erase() erases in sector units, flash_range_program() writes in page units

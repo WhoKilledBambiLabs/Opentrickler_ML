@@ -14,15 +14,8 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.board }} Release
+    name: Build Pico 2 W / RP2350 Release
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        board:
-          - pico_w
-          - pico2_w
 
     steps:
       - name: Check out source
@@ -45,22 +38,22 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B "${{ github.workspace }}/build-${{ matrix.board }}" \
+          cmake -B "${{ github.workspace }}/build-pico2_w" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_BOARD=${{ matrix.board }}
+            -DPICO_BOARD=pico2_w
 
       - name: Build
-        run: cmake --build "${{ github.workspace }}/build-${{ matrix.board }}" --config Release
+        run: cmake --build "${{ github.workspace }}/build-pico2_w" --config Release
 
       - name: Upload firmware outputs
         uses: actions/upload-artifact@v4
         with:
-          name: opentrickler-${{ matrix.board }}-release
+          name: opentrickler-pico2_w-rp2350-release
           if-no-files-found: error
           path: |
             src/generated/version.c
-            build-${{ matrix.board }}/*.bin
-            build-${{ matrix.board }}/*.elf
-            build-${{ matrix.board }}/*.hex
-            build-${{ matrix.board }}/*.uf2
+            build-pico2_w/*.bin
+            build-pico2_w/*.elf
+            build-pico2_w/*.hex
+            build-pico2_w/*.uf2
