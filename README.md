@@ -35,18 +35,6 @@ This branch is based on the OpenTrickler controller firmware, but the ML beta ta
 - Moves the ML beta hardware baseline to Pico 2 W / RP2350 because RP2040 RAM is no longer sufficient.
 - Fixes and hardens several AI telemetry and recovery behaviors found during beta testing.
 
-## What Is Intentionally Not In This Repository
-
-The GitHub repository is kept clean for firmware review. Local test material stays local.
-
-- No field data collector application or packaged collector zips.
-- No raw flight logs, charge CSV files, REST captures, or private test sessions.
-- No generated firmware binaries committed under release history.
-- No binary comparison dumps or reverse-analysis artifacts.
-- No personal LAN IP addresses in user-facing documentation.
-
-Build outputs and private test evidence should be shared through private release assets or support channels only when needed.
-
 ## Feature Overview
 
 ### Profile-Aware AI Model
