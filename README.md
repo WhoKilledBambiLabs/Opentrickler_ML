@@ -51,9 +51,33 @@ Each profile can hold its own learned model. Use separate profiles for different
 
 Characterization measures how powder moves through the current machine and profile. It samples coarse and fine behavior, estimates flow and tail, builds a finish plan, and ends in a `ready_to_save` state when the working model can be applied to the selected profile.
 
+In practical terms, characterization is the first learning pass for a powder/profile. It temporarily takes over charge mode and runs controlled motor pulses while the scale records how much powder actually arrived, how much arrived after the motor stopped, and how long the scale took to show the change.
+
+Default characterization plan:
+
+| Stage | Motor | Default samples | Default budget | Default sample target | What it learns |
+| --- | --- | ---: | ---: | ---: | --- |
+| `characterizing_coarse` | Coarse only | 12 | 120 gn | 8.0 gn | Bulk speed, coarse flow curve, coarse tail, and a lower-tail trim/coarse speed. |
+| `characterizing_fine` | Fine only | 12 | 36 gn | 1.75 gn | Fine flow curve, fine tail, fast-finish behavior, and the first micro/recovery samples. |
+
+The fine stage reserves its first four low-speed samples for recovery behavior. Those samples use fine speeds around `0.08`, `0.12`, `0.20`, and `0.35` rps with longer motor-on windows so the firmware can learn near-target `micro_heal` behavior instead of treating the fine tube as only a fast finishing motor.
+
+Characterization produces a working model, not an automatically trusted model. Save it only after the session reaches `ready_to_save` and the samples were clean.
+
 ### Machine Calibration
 
 Machine calibration runs after a characterization model exists. It measures scale/sample timing, response delay, settle behavior, coarse tail, fine tail, open-loop flow, and handoff margins so production throws can make safer decisions.
+
+Machine calibration is the second pass. It starts from a saved characterization model, then measures the real machine timing around that model: scale lag, first response time, settle time, post-stop tail, uncertainty, open-loop coarse/fine flow, and safe handoff margins.
+
+Default calibration plan:
+
+| Stage | Motor | Default samples | Default budget guard | Motor-on pattern | What it learns |
+| --- | --- | ---: | ---: | --- | --- |
+| `calibrating_coarse` | Coarse only | 8 | max(80 gn, 65% of coarse budget) | 250, 450, 650, 850 ms at production speed, then repeated at trim speed | Scale response, coarse settle, coarse tail, trim/bulk flow, and uncertainty. |
+| `calibrating_fine` | Fine only | 8 | max(12 gn, 45% of fine budget) | 500, 800, 1100, 1400 ms at fine speed, then 2500, 3500, 5000, 7000 ms at recovery speed | Fine response, fine settle, fine tail, micro-flow, and post-finish watch timing. |
+
+Calibration needs at least three valid coarse and three valid fine samples. When it finishes, save/apply it just like characterization. The saved model then contains both powder-flow characterization and machine timing calibration.
 
 ### Runtime Learning
 
@@ -70,6 +94,28 @@ The web portal can gently bias a saved model without rerunning characterization:
 - `Undo Last`: restores the previous steering snapshot when available.
 
 Use one steering step at a time, then run enough charges to observe the effect.
+
+### Full AI Tuning Reference
+
+The complete characterization, calibration, model, runtime observation, and REST parameter reference is published here:
+
+- [AI tuning reference](https://whokilledbambilabs.github.io/Opentrickler_ML/ai-tuning-reference.html)
+
+Key adjustable AI configuration parameters:
+
+| Parameter | Default | Range | Meaning |
+| --- | ---: | ---: | --- |
+| `coarse_budget_gn` | 120 | 20-500 | Maximum total coarse powder used during characterization before the stage can stop. |
+| `fine_budget_gn` | 36 | 5-150 | Maximum total fine powder used during characterization before the stage can stop. |
+| `coarse_sample_count` | 12 | 2-12 | Planned coarse characterization samples. |
+| `fine_sample_count` | 12 | 2-12 | Planned fine characterization samples. |
+| `coarse_sample_target_gn` | 8.0 | 2-50 | Target delivered powder per coarse characterization sample before safety limits adjust it. |
+| `fine_sample_target_gn` | 1.75 | 0.2-10 | Target delivered powder per fine characterization sample before safety limits adjust it. |
+| `noise_margin` | 0.05 | 0.005-0.25 | Minimum useful scale movement used to filter tiny/noisy samples. |
+| `time_cost_weight` | 1.0 | 0.1-20 | Model scoring weight for speed/time preference. |
+| `error_cost_weight` | 8.0 | 0.1-50 | Model scoring weight for tail/error avoidance. |
+
+Normal users should leave these defaults alone until they have a saved rollback model and enough repeatable test data to justify changing them.
 
 ### OTA Staging
 

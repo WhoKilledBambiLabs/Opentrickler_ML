@@ -1,22 +1,12 @@
 # OpenTrickler ML Firmware Release History
 
-This folder is the public-safe release ledger for the public beta firmware branch.
-
-It is intentionally documentation-only inside the Git repository. Build products, raw telemetry, local test sessions, and support captures are not committed here.
+This folder is the release ledger for the public beta firmware branch.
 
 ## Contents
 
 - `CHANGELOG.md`: chronological firmware history.
 - `ISSUE_LEDGER.md`: bugs, fixes, and verification status.
 - `releases/<version>/RELEASE_NOTES.md`: detailed notes for one firmware beta.
-
-## What Stays Out Of Git
-
-- Generated `.bin`, `.uf2`, `.elf`, `.hex`, `.map`, and `.dis` files.
-- Field logs, charge samples, REST captures, and support sessions.
-- Field data collector tooling and packaged collector archives.
-- Binary comparison dumps, external firmware analysis, and local investigation scratch files.
-- Personal LAN addresses or local filesystem paths.
 
 Release binaries should be produced by local builds or GitHub Actions and attached as GitHub release assets when they are ready to share.
 

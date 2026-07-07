@@ -22,6 +22,7 @@
         <a href="#profiles">Profiles</a>
         <a href="#characterization">Characterization</a>
         <a href="#calibration">Calibration</a>
+        <a href="ai-tuning-reference.html">AI Reference</a>
         <a href="#api">REST API</a>
         <a href="#build">Build</a>
       </div>
@@ -125,8 +126,8 @@
             <p>Status, tuning, steering, charge state, system info, and OTA staging are available over Wi-Fi.</p>
           </article>
           <article class="feature-card">
-            <h3>Clean beta repo</h3>
-            <p>Field logs, raw captures, collector tooling, generated binaries, and comparison dumps are excluded.</p>
+            <h3>Full tuning reference</h3>
+            <p>Characterization, calibration, saved-model fields, runtime observations, and REST parameters are documented.</p>
           </article>
         </div>
       </div>
@@ -336,6 +337,27 @@
             <p>The scale drifts, powder bridges, the wrong profile is selected, the pan workflow is interrupted, or the model obviously learned from bad samples.</p>
           </div>
         </div>
+        <div class="table-wrap offset-block">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Motor</th>
+                <th>Default plan</th>
+                <th>What the firmware records</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>characterizing_coarse</code></td><td>Coarse only</td><td>12 samples, 120 gn budget, 8.0 gn nominal sample target</td><td>Speed, motor-on time, delivered weight, tail after stop, flow, best bulk speed, and trim-speed candidate.</td></tr>
+              <tr><td><code>characterizing_fine</code></td><td>Fine only</td><td>12 samples, 36 gn budget, 1.75 gn nominal sample target</td><td>Fine flow, fine tail, fast-finish behavior, first four recovery/micro samples, and fine-window recommendation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small-note">
+          The first four fine samples are low-speed recovery samples near <code>0.08</code>, <code>0.12</code>,
+          <code>0.20</code>, and <code>0.35</code> rps. Full parameter details are in the
+          <a href="ai-tuning-reference.html">AI tuning reference</a>.
+        </p>
       </div>
     </section>
 
@@ -381,6 +403,26 @@
             <p>After changing scale, tube, powder behavior, gate geometry, major motor settings, or when handoff and recovery feel wrong.</p>
           </div>
         </div>
+        <div class="table-wrap offset-block">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Motor</th>
+                <th>Default plan</th>
+                <th>What changes in the saved model</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>calibrating_coarse</code></td><td>Coarse only</td><td>8 samples using production and trim speeds, with 250-850 ms pulses</td><td>Scale response, coarse settle, coarse tail average/high value, coarse uncertainty, bulk flow, trim flow, and handoff margin.</td></tr>
+              <tr><td><code>calibrating_fine</code></td><td>Fine only</td><td>8 samples using fine and recovery speeds, with 500-7000 ms pulses</td><td>Fine response, fine settle, fine tail average/high value, fine uncertainty, fine flow, micro-flow, and post-finish watch time.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small-note">
+          Calibration requires a saved characterization model and at least three valid coarse plus three valid fine samples.
+          See the <a href="ai-tuning-reference.html">AI tuning reference</a> for all saved fields and REST parameters.
+        </p>
       </div>
     </section>
 
@@ -480,6 +522,9 @@
               <tr><td>/rest/ai_steering</td><td>Bias a saved model toward a selected behavior.</td><td>profile_idx, action</td></tr>
               <tr><td>/rest/ai_tuning_history</td><td>Read saved model samples and runtime observations.</td><td>profile_idx</td></tr>
               <tr><td>/rest/ai_tuning_config</td><td>Read AI budgets, sample counts, target, noise, and cost weights.</td><td>none</td></tr>
+              <tr><td>/rest/ai_tuning_config_set</td><td>Set AI budgets, sample counts, target sizes, noise margin, and cost weights.</td><td>coarse_budget_gn, fine_budget_gn, coarse_sample_count, fine_sample_count, coarse_sample_target_gn, fine_sample_target_gn, noise_margin, time_cost_weight, error_cost_weight</td></tr>
+              <tr><td>/rest/ai_tuning_cancel</td><td>Cancel the current characterization or calibration run.</td><td>none</td></tr>
+              <tr><td>/rest/ai_tuning_clear_history</td><td>Clear saved AI history and saved models.</td><td>none</td></tr>
               <tr><td>/rest/charge_mode_state</td><td>Read live charge state, weight, events, phases, and telemetry.</td><td>none</td></tr>
               <tr><td>/rest/system_control</td><td>Read system and firmware information.</td><td>none</td></tr>
               <tr><td>/rest/ota_status</td><td>Report OTA support, staging capacity, and staged-image metadata.</td><td>none</td></tr>
@@ -591,36 +636,6 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
       </div>
     </section>
 
-    <section id="excluded" class="section-band alt">
-      <div class="section-inner">
-        <div class="section-heading">
-          <p class="eyebrow">Repository hygiene</p>
-          <h2>What Is Not Published Here</h2>
-          <p>
-            This repository is for firmware source and public-safe documentation. Local testing evidence remains
-            outside the Git history unless it is deliberately prepared for release.
-          </p>
-        </div>
-        <div class="feature-grid">
-          <article class="feature-card">
-            <h3>No raw telemetry</h3>
-            <p>Beta flight logs, charge CSVs, REST captures, and local test-session folders are ignored.</p>
-          </article>
-          <article class="feature-card">
-            <h3>No collector app</h3>
-            <p>The field data collector source, packages, and packaging scripts are not part of this GitHub repo.</p>
-          </article>
-          <article class="feature-card">
-            <h3>No generated binaries</h3>
-            <p>Firmware binaries are produced by local builds or GitHub Actions, not committed to release history.</p>
-          </article>
-          <article class="feature-card">
-            <h3>No personal network details</h3>
-            <p>Personal LAN addresses and local session paths are removed from user-facing documentation.</p>
-          </article>
-        </div>
-      </div>
-    </section>
   </main>
 
   <footer class="site-footer">

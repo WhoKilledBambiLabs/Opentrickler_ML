@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenTrickler ML AI Tuning Reference</title>
+  <meta name="description" content="Detailed characterization, machine calibration, runtime learning, and REST parameter reference for OpenTrickler ML Firmware.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-wrap" aria-label="Primary navigation">
+      <a class="brand" href="index.html" aria-label="OpenTrickler ML Firmware home">
+        <span class="brand-mark">OT</span>
+        <span>
+          <strong>OpenTrickler ML Firmware</strong>
+          <small>AI tuning reference</small>
+        </span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Overview</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#config">Config</a>
+        <a href="#model">Model Fields</a>
+        <a href="#api">REST API</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero section-band">
+      <div class="section-inner">
+        <p class="eyebrow">Complete beta reference</p>
+        <h1>Characterization and calibration are the core difference in this firmware.</h1>
+        <p class="lede">
+          The ML layer does not try to make every OpenTrickler use one fixed set of motor numbers. It learns a saved
+          model per profile, then uses runtime observations to keep that model aligned with the real machine.
+        </p>
+      </div>
+    </section>
+
+    <section id="workflow" class="section-band alt">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">User workflow</p>
+          <h2>Recommended Order</h2>
+          <p>
+            Use this order for each powder, tube, scale, pan, and target-range combination. A profile is the boundary
+            around the learned model, so changing the physical setup should usually mean a new profile or a rerun.
+          </p>
+        </div>
+        <div class="workflow-grid">
+          <article>
+            <h3>1. Create profile</h3>
+            <p>Name the profile for the powder/setup and enter trusted baseline motor settings.</p>
+          </article>
+          <article>
+            <h3>2. Characterize</h3>
+            <p>Run controlled coarse and fine samples so the firmware can learn flow, tail, and recovery behavior.</p>
+          </article>
+          <article>
+            <h3>3. Save model</h3>
+            <p>Apply the working model only after the tuner reaches <code>ready_to_save</code> and the samples were clean.</p>
+          </article>
+          <article>
+            <h3>4. Calibrate machine</h3>
+            <p>Measure scale lag, settle timing, open-loop flow, and safe handoff margins using the saved model.</p>
+          </article>
+          <article>
+            <h3>5. Save calibration</h3>
+            <p>Apply again so the profile stores both powder characterization and machine timing data.</p>
+          </article>
+          <article>
+            <h3>6. Verify throws</h3>
+            <p>Run supervised production charges, verify every charge, and use steering only after a repeatable pattern appears.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="characterization" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">First learning pass</p>
+          <h2>How Characterization Works</h2>
+          <p>
+            Characterization starts a normal charge-mode workflow from the web portal, but the AI planner supplies each
+            motor pulse. The firmware measures the scale before the pulse, immediately after the motor stops, and after
+            the powder/scale response settles. Every sample becomes a flow sample with speed, motor-on time, delivered
+            weight, tail, and flow.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Motor mode</th>
+                <th>Default limit</th>
+                <th>Speed selection</th>
+                <th>Stop condition</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>characterizing_coarse</code></td>
+                <td><code>coarse</code></td>
+                <td>12 samples or 120 gn total budget</td>
+                <td>Sweeps between profile coarse min/max speed, capped by motor and hardware safety limits.</td>
+                <td>Stops when <code>coarse_sample_count</code> is reached or <code>coarse_budget_gn</code> is used.</td>
+              </tr>
+              <tr>
+                <td><code>characterizing_fine</code></td>
+                <td><code>fine</code></td>
+                <td>12 samples or 36 gn total budget</td>
+                <td>Sweeps between profile fine min/max speed. First four samples are low-speed recovery probes.</td>
+                <td>Stops when <code>fine_sample_count</code> is reached or <code>fine_budget_gn</code> is used.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="data-panel">
+          <div>
+            <h3>Coarse output</h3>
+            <p>Coarse flow slope/intercept, average/guarded coarse tail, best bulk speed, best bulk flow, trim speed, trim flow, and trim tail.</p>
+          </div>
+          <div>
+            <h3>Fine output</h3>
+            <p>Fine flow slope/intercept, fine tail, best fine speed, best fine flow, recovery speed, recovery flow, recovery tail, fine window, and fine tube profile.</p>
+          </div>
+        </div>
+        <p class="small-note">
+          The first four fine recovery samples use approximately <code>0.08</code>, <code>0.12</code>, <code>0.20</code>,
+          and <code>0.35</code> rps with long motor-on windows of about <code>12000</code>, <code>10000</code>,
+          <code>8000</code>, and <code>6500</code> ms. This is what teaches the firmware how the fine tube behaves
+          near target during <code>fine_recover</code> and <code>micro_heal</code>.
+        </p>
+      </div>
+    </section>
+
+    <section id="calibration" class="section-band alt">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Second learning pass</p>
+          <h2>How Machine Calibration Works</h2>
+          <p>
+            Machine calibration requires an existing saved characterization model. It copies that saved model into a
+            working session, clears the machine-calibration portion, then runs timing samples at the speeds the saved
+            model expects to use in production.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Motor mode</th>
+                <th>Default plan</th>
+                <th>What is measured</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>calibrating_coarse</code></td>
+                <td><code>coarse</code></td>
+                <td>8 samples. Pulses are 250, 450, 650, and 850 ms at production coarse speed, then repeated at trim speed.</td>
+                <td>Scale period, first response, settle time, coarse tail average/high value, uncertainty, bulk flow, trim flow, and recommended bulk handoff margin.</td>
+              </tr>
+              <tr>
+                <td><code>calibrating_fine</code></td>
+                <td><code>fine</code></td>
+                <td>8 samples. Pulses are 500, 800, 1100, and 1400 ms at fine speed, then 2500, 3500, 5000, and 7000 ms at recovery speed.</td>
+                <td>Fine response, fine settle, fine tail average/high value, fine uncertainty, fine flow, micro flow, recommended trim stop, and post-finish watch time.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="data-panel">
+          <div>
+            <h3>Minimum valid data</h3>
+            <p>Calibration must capture at least 3 valid coarse samples and 3 valid fine samples. It can stop after that if the stage budget guard has been reached.</p>
+          </div>
+          <div>
+            <h3>Why it matters</h3>
+            <p>Characterization learns powder flow. Calibration learns the actual machine delay and tail risk, which changes safe bulk handoff and final recovery behavior.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="config" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Advanced configuration</p>
+          <h2>Adjustable AI Tuning Parameters</h2>
+          <p>
+            These values are exposed by <code>/rest/ai_tuning_config</code> and can be changed through
+            <code>/rest/ai_tuning_config_set</code>. Defaults are firmware defaults after a clean AI config load.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Default</th>
+                <th>Allowed range</th>
+                <th>Used by</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>coarse_budget_gn</code></td><td>120</td><td>20-500</td><td>Characterization and calibration budget guard</td><td>Maximum total coarse powder used before the stage may stop.</td></tr>
+              <tr><td><code>fine_budget_gn</code></td><td>36</td><td>5-150</td><td>Characterization and calibration budget guard</td><td>Maximum total fine powder used before the stage may stop.</td></tr>
+              <tr><td><code>coarse_sample_count</code></td><td>12</td><td>2-12</td><td>Coarse characterization</td><td>Planned number of coarse samples.</td></tr>
+              <tr><td><code>fine_sample_count</code></td><td>12</td><td>2-12</td><td>Fine characterization</td><td>Planned number of fine samples.</td></tr>
+              <tr><td><code>coarse_sample_target_gn</code></td><td>8.0</td><td>2-50</td><td>Coarse sample planner</td><td>Nominal coarse sample size before remaining-budget and on-time safety limits adjust it.</td></tr>
+              <tr><td><code>fine_sample_target_gn</code></td><td>1.75</td><td>0.2-10</td><td>Fine sample planner</td><td>Nominal fine sample size before recovery-sample and budget guards adjust it.</td></tr>
+              <tr><td><code>noise_margin</code></td><td>0.05</td><td>0.005-0.25</td><td>Sample filtering and planning</td><td>Minimum meaningful powder movement used to filter noisy/too-small samples.</td></tr>
+              <tr><td><code>time_cost_weight</code></td><td>1.0</td><td>0.1-20</td><td>Model scoring</td><td>Preference weight for faster samples when selecting model behavior.</td></tr>
+              <tr><td><code>error_cost_weight</code></td><td>8.0</td><td>0.1-50</td><td>Model scoring</td><td>Preference weight for avoiding tail/error when selecting model behavior.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="status" class="section-band alt">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">State machine</p>
+          <h2>Session States And Live Plan Fields</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>state</code></td><td>Current AI tuning state.</td></tr>
+              <tr><td><code>is_active</code></td><td>True while characterization or calibration is running.</td></tr>
+              <tr><td><code>is_complete</code></td><td>True when the session is complete and waiting to be saved.</td></tr>
+              <tr><td><code>drops_completed</code></td><td>Total samples recorded during the current session.</td></tr>
+              <tr><td><code>drops_max</code></td><td>Planned total samples for the whole session.</td></tr>
+              <tr><td><code>progress_percent</code></td><td>Session progress based on completed samples versus planned samples.</td></tr>
+              <tr><td><code>profile_idx</code></td><td>Profile being viewed or tuned.</td></tr>
+              <tr><td><code>requested_target_weight</code></td><td>Target charge weight supplied when the session started.</td></tr>
+              <tr><td><code>status_message</code></td><td>Human-readable current stage message.</td></tr>
+              <tr><td><code>error_message</code></td><td>Error text when the session fails.</td></tr>
+              <tr><td><code>current_plan</code></td><td>Next planned AI motor sample when a session is active.</td></tr>
+              <tr><td><code>last_drop</code></td><td>Most recent recorded sample telemetry.</td></tr>
+              <tr><td><code>working_model</code></td><td>Current in-progress model.</td></tr>
+              <tr><td><code>saved_model</code></td><td>Enabled profile model, or <code>null</code> if none exists.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>State</th>
+                <th>Meaning</th>
+                <th>User action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>idle</code></td><td>No active characterization or calibration session.</td><td>Start characterization or calibration when ready.</td></tr>
+              <tr><td><code>characterizing_coarse</code></td><td>Coarse motor samples are running.</td><td>Follow pan prompts and do not change setup.</td></tr>
+              <tr><td><code>characterizing_fine</code></td><td>Fine motor and recovery samples are running.</td><td>Follow pan prompts and keep the scale stable.</td></tr>
+              <tr><td><code>calibrating_coarse</code></td><td>Saved-model coarse timing samples are running.</td><td>Let calibration complete without changing setup.</td></tr>
+              <tr><td><code>calibrating_fine</code></td><td>Saved-model fine and micro timing samples are running.</td><td>Let calibration complete without changing setup.</td></tr>
+              <tr><td><code>ready_to_save</code></td><td>The working model is complete and can be saved to the selected profile.</td><td>Review, then apply/save if the run was clean.</td></tr>
+              <tr><td><code>error</code></td><td>The session could not produce a valid model or calibration.</td><td>Discard, fix the cause, and rerun.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap offset-block">
+          <table>
+            <thead>
+              <tr>
+                <th>Status field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>current_plan.motor_mode</code></td><td><code>coarse</code>, <code>fine</code>, or <code>normal</code>.</td></tr>
+              <tr><td><code>current_plan.speed_rps</code></td><td>Motor speed planned for the next AI sample.</td></tr>
+              <tr><td><code>current_plan.motor_on_time_ms</code></td><td>Planned motor-on time for the next AI sample.</td></tr>
+              <tr><td><code>current_plan.target_weight</code></td><td>Expected sample delivery target in grains.</td></tr>
+              <tr><td><code>current_plan.stage_budget_used_gn</code></td><td>Powder already used by the current stage.</td></tr>
+              <tr><td><code>current_plan.stage_budget_limit_gn</code></td><td>Powder budget guard for the current stage.</td></tr>
+              <tr><td><code>current_plan.sample_index</code></td><td>One-based sample number within the current stage.</td></tr>
+              <tr><td><code>current_plan.total_samples</code></td><td>Maximum planned samples for the current stage.</td></tr>
+              <tr><td><code>current_plan.description</code></td><td>Human-readable firmware status message.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap offset-block">
+          <table>
+            <thead>
+              <tr>
+                <th><code>last_drop</code> field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>sample_number</code></td><td>One-based sample number in the current stage.</td></tr>
+              <tr><td><code>motor_mode</code></td><td><code>coarse</code>, <code>fine</code>, or <code>normal</code>.</td></tr>
+              <tr><td><code>speed_rps</code></td><td>Motor speed used for the sample.</td></tr>
+              <tr><td><code>motor_on_time_ms</code></td><td>Actual motor-on duration.</td></tr>
+              <tr><td><code>start_weight</code></td><td>Scale reading before the motor pulse.</td></tr>
+              <tr><td><code>stop_weight</code></td><td>Scale reading captured immediately after motor stop.</td></tr>
+              <tr><td><code>final_weight</code></td><td>Settled/truth weight used for the sample.</td></tr>
+              <tr><td><code>delivered_weight</code></td><td><code>final_weight - start_weight</code>, clamped at zero.</td></tr>
+              <tr><td><code>tail_weight</code></td><td><code>final_weight - stop_weight</code>, clamped at zero when stop snapshot is valid.</td></tr>
+              <tr><td><code>target_weight</code></td><td>Planned sample target in grains.</td></tr>
+              <tr><td><code>overthrow</code></td><td><code>final_weight - target_weight</code>.</td></tr>
+              <tr><td><code>coarse_time_ms</code>, <code>fine_time_ms</code></td><td>Motor time split by motor mode.</td></tr>
+              <tr><td><code>total_time_ms</code></td><td>Total sample motor time.</td></tr>
+              <tr><td><code>first_response_time_ms</code></td><td>Time until the scale first showed the pulse response.</td></tr>
+              <tr><td><code>settle_time_ms</code></td><td>Observed time until the sample settled.</td></tr>
+              <tr><td><code>scale_sample_period_ms</code></td><td>Measured scale update period during the sample.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="model" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Saved profile model</p>
+          <h2>Model Fields</h2>
+          <p>
+            <code>working_model</code> is the model currently being built or calibrated. <code>saved_model</code> is
+            the enabled model stored for the selected profile. <code>/rest/ai_tuning_history</code> also returns
+            the saved model and the raw sample arrays.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>valid</code>, <code>enabled</code></td><td>Whether the model passed validation and is active for production planning.</td></tr>
+              <tr><td><code>coarse_sample_count</code>, <code>fine_sample_count</code>, <code>fine_recovery_sample_count</code></td><td>How many valid samples are stored for each learned region.</td></tr>
+              <tr><td><code>coarse_flow_slope</code>, <code>coarse_flow_intercept</code></td><td>Linear coarse flow estimate versus speed.</td></tr>
+              <tr><td><code>fine_flow_slope</code>, <code>fine_flow_intercept</code></td><td>Linear fine flow estimate versus speed.</td></tr>
+              <tr><td><code>coarse_best_speed_rps</code>, <code>coarse_best_flow_gps</code></td><td>Best coarse/bulk sample selected for useful speed with acceptable tail.</td></tr>
+              <tr><td><code>coarse_tail_gn</code></td><td>Guarded coarse tail used to avoid stopping too late.</td></tr>
+              <tr><td><code>coarse_trim_speed_rps</code>, <code>coarse_trim_flow_gps</code>, <code>coarse_trim_tail_gn</code></td><td>Lower-tail coarse/trim candidate used near the handoff region.</td></tr>
+              <tr><td><code>fine_best_speed_rps</code>, <code>fine_best_flow_gps</code>, <code>fine_tail_gn</code></td><td>Main fine finish speed, flow, and tail estimate.</td></tr>
+              <tr><td><code>fine_recovery_speed_rps</code>, <code>fine_recovery_flow_gps</code>, <code>fine_recovery_tail_gn</code></td><td>Low-speed recovery model for under-target finishing.</td></tr>
+              <tr><td><code>recommended_fine_window_gn</code></td><td>How much charge weight should be reserved for fine finishing.</td></tr>
+              <tr><td><code>runtime_bias_gn</code></td><td>Small automatic safety/speed bias learned from production throws.</td></tr>
+              <tr><td><code>fine_fast_flow_gps</code>, <code>fine_fast_tail_gn</code>, <code>fine_fast_tail_confidence</code></td><td>Runtime view of faster fine finish behavior and confidence.</td></tr>
+              <tr><td><code>fine_micro_flow_gps</code>, <code>fine_micro_tail_gn</code>, <code>fine_micro_tail_confidence</code></td><td>Runtime view of very small recovery behavior and confidence.</td></tr>
+              <tr><td><code>fine_stop_safety_bias_gn</code></td><td>Extra fine stop safety margin learned from confidence and tail behavior.</td></tr>
+              <tr><td><code>fine_tube_profile_id</code>, <code>fine_tube_profile</code></td><td>Detected fine tube behavior: <code>unknown</code>, <code>low-flow/low-tail</code>, <code>balanced</code>, or <code>high-tail</code>.</td></tr>
+              <tr><td><code>steering_bulk_bias_gn</code>, <code>steering_fine_bias_gn</code>, <code>steering_recovery_speed_scale</code></td><td>User steering offsets applied on top of the learned model.</td></tr>
+              <tr><td><code>steering_undo_available</code>, <code>steering_count</code></td><td>Whether one steering step can be undone and how many steering steps have been applied.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap offset-block">
+          <table>
+            <thead>
+              <tr>
+                <th>History/sample field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>profile_idx</code></td><td>Profile returned by <code>/rest/ai_tuning_history</code>.</td></tr>
+              <tr><td><code>observation_count</code></td><td>Total runtime observations stored in flash across profiles.</td></tr>
+              <tr><td><code>coarse_samples[]</code>, <code>fine_samples[]</code>, <code>fine_recovery_samples[]</code></td><td>Raw characterization sample arrays from the saved model.</td></tr>
+              <tr><td><code>speed_rps</code></td><td>Motor speed used by a stored sample.</td></tr>
+              <tr><td><code>motor_on_time_ms</code></td><td>Motor-on duration used by a stored sample.</td></tr>
+              <tr><td><code>delivered_weight</code></td><td>Powder delivered by a stored sample.</td></tr>
+              <tr><td><code>tail_weight</code></td><td>Powder that arrived after the motor stopped.</td></tr>
+              <tr><td><code>tail_ratio</code></td><td>Tail divided by delivered weight.</td></tr>
+              <tr><td><code>flow_gps</code></td><td>Delivered powder divided by motor-on seconds.</td></tr>
+              <tr><td><code>safety</code></td><td>Sample classification: <code>safe</code>, <code>caution</code>, <code>blocked</code>, or <code>invalid</code>.</td></tr>
+              <tr><td><code>observations[]</code></td><td>Runtime learning observations matching the requested profile.</td></tr>
+              <tr><td><code>summary.matching_observations</code></td><td>Runtime observations matching the requested profile.</td></tr>
+              <tr><td><code>summary.avg_error_gn</code>, <code>summary.avg_time_ms</code></td><td>Average final error and average charge time for matching observations.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="machine-fields" class="section-band alt">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Machine calibration object</p>
+          <h2>Machine Calibration Fields</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>valid</code></td><td>True when enough coarse/fine samples and usable flow values exist.</td></tr>
+              <tr><td><code>coarse_sample_count</code>, <code>fine_sample_count</code></td><td>Calibration samples captured for each motor.</td></tr>
+              <tr><td><code>scale_sample_period_ms</code></td><td>Measured scale update period used for lag guards.</td></tr>
+              <tr><td><code>coarse_first_response_ms</code>, <code>fine_first_response_ms</code></td><td>Time until the scale first shows powder movement after a motor pulse.</td></tr>
+              <tr><td><code>coarse_settle_ms</code>, <code>fine_settle_ms</code></td><td>Observed settle time after each motor stops.</td></tr>
+              <tr><td><code>coarse_tail_avg_gn</code>, <code>fine_tail_avg_gn</code></td><td>Average powder that arrives after motor stop.</td></tr>
+              <tr><td><code>coarse_tail_p95_gn</code>, <code>fine_tail_p95_gn</code></td><td>High observed tail value used as a conservative guard.</td></tr>
+              <tr><td><code>coarse_uncertainty_gn</code>, <code>fine_uncertainty_gn</code></td><td>How much tail varies around the average.</td></tr>
+              <tr><td><code>coarse_open_loop_flow_gps</code>, <code>trim_open_loop_flow_gps</code></td><td>Measured coarse flow at production and trim speeds.</td></tr>
+              <tr><td><code>fine_open_loop_flow_gps</code>, <code>micro_open_loop_flow_gps</code></td><td>Measured fine flow at finish and micro/recovery speeds.</td></tr>
+              <tr><td><code>recommended_bulk_handoff_gn</code></td><td>Minimum charge weight to leave before bulk/coarse handoff.</td></tr>
+              <tr><td><code>recommended_trim_stop_gn</code></td><td>Minimum margin for stopping trim before final/fine finishing.</td></tr>
+              <tr><td><code>post_finish_watch_ms</code></td><td>How long to watch for delayed powder after finishing before declaring the result stable.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="runtime" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Normal production throws</p>
+          <h2>Runtime Learning Observations</h2>
+          <p>
+            After a saved model is enabled, normal charges add bounded runtime observations. The firmware keeps up to
+            24 observations and filters invalid records before using them.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Observation field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>target_weight</code></td><td>Requested charge weight in grains.</td></tr>
+              <tr><td><code>final_error_gn</code></td><td>Final weight minus target weight.</td></tr>
+              <tr><td><code>total_time_ms</code></td><td>Total motor time recorded for the production throw.</td></tr>
+              <tr><td><code>coarse_stop_weight_gn</code>, <code>after_coarse_settle_gn</code>, <code>observed_coarse_tail_gn</code></td><td>Coarse stop snapshot, settled coarse result, and observed coarse tail.</td></tr>
+              <tr><td><code>fine_stop_weight_gn</code>, <code>after_fine_settle_gn</code>, <code>observed_fine_tail_gn</code></td><td>Fine stop snapshot, settled fine result, and observed fine tail before recovery overwrites nothing.</td></tr>
+              <tr><td><code>post_finish_peak_weight_gn</code></td><td>Highest valid post-finish weight while the pan remained on the scale.</td></tr>
+              <tr><td><code>recovery_start_weight_gn</code>, <code>recovery_end_weight_gn</code></td><td>Weight before and after fine recovery or micro-heal activity.</td></tr>
+              <tr><td><code>recovery_motor_on_ms</code></td><td>Total motor-on time used by recovery.</td></tr>
+              <tr><td><code>recovery_stall_count</code>, <code>recovery_exit_reason</code></td><td>Whether recovery struggled and how it exited.</td></tr>
+              <tr><td><code>profile_idx</code></td><td>Profile that owns the observation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="charge-live" class="section-band alt">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Live production telemetry</p>
+          <h2><code>/rest/charge_mode_state</code> Fields</h2>
+          <p>
+            These are not all AI configuration fields, but they are the live values most useful when watching
+            characterization, calibration, and normal runtime learning.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>s0</code></td><td>Target charge weight. Can also be supplied to set the charge weight.</td></tr>
+              <tr><td><code>s1</code></td><td>Current scale weight.</td></tr>
+              <tr><td><code>s2</code></td><td>Charge-mode state. Can be supplied to enter or exit charge mode.</td></tr>
+              <tr><td><code>s3</code></td><td>Charge-mode event counter.</td></tr>
+              <tr><td><code>s4</code></td><td>Selected profile name.</td></tr>
+              <tr><td><code>s5</code></td><td>Elapsed charge time in seconds.</td></tr>
+              <tr><td><code>s6</code></td><td>Last settled final charge weight, or <code>nan</code>.</td></tr>
+              <tr><td><code>s7</code></td><td>Whether the runtime model controller is active.</td></tr>
+              <tr><td><code>s8</code></td><td>Live phase, such as <code>ai_coarse</code>, <code>ai_fine</code>, <code>fine_recover</code>, or <code>micro_heal</code>.</td></tr>
+              <tr><td><code>s9</code></td><td>Live final target used by the runtime controller.</td></tr>
+              <tr><td><code>s10</code></td><td>Live bulk handoff margin.</td></tr>
+              <tr><td><code>s11</code></td><td>Live trim stop margin.</td></tr>
+              <tr><td><code>s12</code></td><td>Live fine window.</td></tr>
+              <tr><td><code>s13</code></td><td>Live remaining weight relative to the active target.</td></tr>
+              <tr><td><code>s14</code></td><td>Live stop margin for the active phase.</td></tr>
+              <tr><td><code>s15</code></td><td>Salvage/recovery cycles used after stabilization.</td></tr>
+              <tr><td><code>s16</code></td><td>Final acceptance tolerance.</td></tr>
+              <tr><td><code>s17</code></td><td>Coarse stop weight captured by the controller.</td></tr>
+              <tr><td><code>s18</code></td><td>Settled weight after coarse stopped.</td></tr>
+              <tr><td><code>s19</code></td><td>Observed coarse tail.</td></tr>
+              <tr><td><code>s20</code></td><td>Open-loop bulk deadline in milliseconds.</td></tr>
+              <tr><td><code>s21</code></td><td>Last coarse motor command in rps.</td></tr>
+              <tr><td><code>s22</code></td><td>Last fine motor command in rps.</td></tr>
+              <tr><td><code>s23</code></td><td>Fine motor stop weight.</td></tr>
+              <tr><td><code>s24</code></td><td>Weight after fine settle.</td></tr>
+              <tr><td><code>s25</code></td><td>Observed fine tail.</td></tr>
+              <tr><td><code>s26</code></td><td>Highest valid post-finish weight while the pan remained on the scale.</td></tr>
+              <tr><td><code>s27</code></td><td>Fine recovery start weight.</td></tr>
+              <tr><td><code>s28</code></td><td>Fine recovery end/latest weight.</td></tr>
+              <tr><td><code>s29</code></td><td>Fine recovery motor-on time in milliseconds.</td></tr>
+              <tr><td><code>s30</code></td><td>Fine recovery stall count.</td></tr>
+              <tr><td><code>s31</code></td><td>Fine recovery exit reason.</td></tr>
+              <tr><td><code>s32</code></td><td>AI planner decision/explanation string.</td></tr>
+              <tr><td><code>s33</code></td><td>Selected model bulk/coarse speed in rps.</td></tr>
+              <tr><td><code>s34</code></td><td>Selected model bulk/coarse flow in gn/s.</td></tr>
+              <tr><td><code>s35</code></td><td>Selected model bulk/coarse tail in gn.</td></tr>
+              <tr><td><code>s36</code></td><td>Selected model fine speed in rps.</td></tr>
+              <tr><td><code>s37</code></td><td>Selected model fine flow in gn/s.</td></tr>
+              <tr><td><code>s38</code></td><td>Selected model fine tail in gn.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="api" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Integration surface</p>
+          <h2>REST Endpoints And Parameters</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Parameters</th>
+                <th>Returns</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>/rest/ai_tuning_start</code></td><td><code>profile_idx</code> required, 0-7. <code>target</code> optional grains, defaults to 30 if invalid.</td><td><code>success</code>, message, profile name, target weight.</td></tr>
+              <tr><td><code>/rest/ai_machine_calibration_start</code></td><td><code>profile_idx</code> required, 0-7. <code>target</code> optional grains, defaults to 40 if invalid.</td><td><code>success</code>, message, profile name, target weight, or an error if no saved model exists.</td></tr>
+              <tr><td><code>/rest/ai_tuning_status</code></td><td><code>profile_idx</code> optional.</td><td>Session state, progress, current plan, last drop, working model, and saved model.</td></tr>
+              <tr><td><code>/rest/ai_tuning_apply</code></td><td>None.</td><td>Saves the completed working model to the selected profile.</td></tr>
+              <tr><td><code>/rest/ai_tuning_cancel</code></td><td>None.</td><td>Cancels the active characterization or calibration session.</td></tr>
+              <tr><td><code>/rest/ai_steering</code></td><td><code>profile_idx</code> optional, defaults to active profile. <code>action</code> required: <code>faster</code>, <code>safer</code>, <code>fine_finish_faster</code>, <code>bulk_closer</code>, or <code>undo_last</code>.</td><td>Updated saved model with steering fields.</td></tr>
+              <tr><td><code>/rest/ai_tuning_history</code></td><td><code>profile_idx</code> optional, defaults to active profile.</td><td>Saved model, sample arrays, matching runtime observations, and summary averages.</td></tr>
+              <tr><td><code>/rest/ai_tuning_config</code></td><td>None.</td><td>Current AI config values.</td></tr>
+              <tr><td><code>/rest/ai_tuning_config_set</code></td><td>Any subset of the config fields listed above.</td><td>Saves clamped AI config values to EEPROM.</td></tr>
+              <tr><td><code>/rest/ai_tuning_clear_history</code></td><td>None.</td><td>Clears AI saved models and runtime history.</td></tr>
+              <tr><td><code>/rest/profile_config</code></td><td><code>pf</code>, <code>p0</code>-<code>p12</code>, <code>active</code>/<code>select</code>, <code>read_only</code>, <code>ee</code>.</td><td>Profile index, name, PID values, and coarse/fine speed limits.</td></tr>
+              <tr><td><code>/rest/charge_mode_state</code></td><td><code>s0</code> sets charge weight. <code>s2</code> can enter/exit charge mode.</td><td>Live charge state, phase, final weight, stop weights, tails, margins, recovery counters, and model-selected speeds/flows.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small-note">
+          The deprecated <code>/rest/ai_tuning_apply_refined</code> endpoint intentionally returns an error and points
+          callers to <code>/rest/ai_tuning_apply</code>.
+        </p>
+      </div>
+    </section>
+
+    <section id="profile-fields" class="section-band">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="eyebrow">Profile setup</p>
+          <h2>Profile Parameters Used By AI</h2>
+          <p>
+            The AI planner uses the selected profile as its starting envelope. These fields are exposed through
+            <code>/rest/profile_config</code>.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>pf</code></td><td>Profile index, 0-7.</td></tr>
+              <tr><td><code>p0</code></td><td>Profile revision.</td></tr>
+              <tr><td><code>p1</code></td><td>Compatibility value.</td></tr>
+              <tr><td><code>p2</code></td><td>Profile name, stored in a 16-character field.</td></tr>
+              <tr><td><code>p3</code>, <code>p4</code>, <code>p5</code></td><td>Coarse PID values: Kp, Ki, Kd.</td></tr>
+              <tr><td><code>p6</code>, <code>p7</code></td><td>Coarse minimum and maximum flow speed in rps.</td></tr>
+              <tr><td><code>p8</code>, <code>p9</code>, <code>p10</code></td><td>Fine PID values: Kp, Ki, Kd.</td></tr>
+              <tr><td><code>p11</code>, <code>p12</code></td><td>Fine minimum and maximum flow speed in rps.</td></tr>
+              <tr><td><code>active</code> or <code>select</code></td><td>Make the profile active for runtime use.</td></tr>
+              <tr><td><code>read_only</code></td><td>Inspect a profile without switching active profile.</td></tr>
+              <tr><td><code>ee</code></td><td>Save profile changes to EEPROM.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="section-inner footer-grid">
+      <p>OpenTrickler ML Firmware AI tuning reference.</p>
+      <p>Pico 2 W / RP2350 only. Verify every charge and keep a rollback UF2 available.</p>
+    </div>
+  </footer>
+</body>
+</html>

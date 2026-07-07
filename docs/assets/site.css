@@ -548,6 +548,10 @@ tr:last-child td {
   color: var(--muted);
 }
 
+.offset-block {
+  margin-top: 24px;
+}
+
 .release-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
