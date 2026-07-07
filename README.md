@@ -20,6 +20,12 @@ The current ML firmware combines AI characterization, runtime learning, REST tel
 
 The build system enforces this. Any attempt to configure with `-DPICO_BOARD=pico_w` fails immediately with a clear message instead of producing a risky or partial firmware image.
 
+## Recommended Fine Tube
+
+This firmware pairs especially well with the ultra-low-flow small fine tube from the original Eamars OpenTrickler hardware repository: [Ultra Low Flow Fine Trickler Tube - Scaled to 99.7 Percent.stl](https://github.com/eamars/OpenTrickler/blob/main/STL/OpenTrickler/Ultra%20Low%20Flow%20Fine%20Trickler%20Tube%20-%20Scaled%20to%2099.7%20Percent.stl).
+
+For this ML firmware, the ultra-low-flow tube is the preferred fine tube because its slower, smoother feed gives the controller far more precision during the final approach, recovery, and `micro_heal` phases. Other fine tube designs may work, but tube geometry changes flow and tail behavior. Create a separate profile and rerun characterization and machine calibration after changing tube design, powder, scale, or target range.
+
 ## What Is Different From Original OpenTrickler Firmware
 
 This branch is based on the OpenTrickler controller firmware, but the ML beta target is Pico 2 W / RP2350 only. It adds an adaptive tuning layer around the existing charge workflow.

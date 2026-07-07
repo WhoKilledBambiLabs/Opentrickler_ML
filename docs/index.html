@@ -143,6 +143,14 @@
             mini 12864 display. Pico W / RP2040 is intentionally disabled because the firmware no longer fits
             within its 256 KB RAM budget.
           </p>
+          <p>
+            This firmware pairs especially well with the ultra-low-flow small fine tube from the original Eamars
+            OpenTrickler hardware repository:
+            <a href="https://github.com/eamars/OpenTrickler/blob/main/STL/OpenTrickler/Ultra%20Low%20Flow%20Fine%20Trickler%20Tube%20-%20Scaled%20to%2099.7%20Percent.stl">Ultra Low Flow Fine Trickler Tube - Scaled to 99.7 Percent.stl</a>.
+            Its slower, smoother feed gives the ML controller far more precision during final approach, recovery,
+            and <code>micro_heal</code>. Other fine tube designs may work, but re-characterize and rerun machine
+            calibration after changing tube geometry.
+          </p>
           <ul class="check-list">
             <li>2.4 GHz Wi-Fi only, with AP mode for first-time setup.</li>
             <li>Supported scale drivers include AND FX-i, Steinberg SBS, G&amp;G/JJB, US Solid JFDBS, JM Science, Creedmoor, Radwag PS R2, Sartorius, Generic, and Ohaus PR.</li>
