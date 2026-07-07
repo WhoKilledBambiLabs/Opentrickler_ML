@@ -16,7 +16,7 @@
 //            ------
 //             EXP2
 // 
-// For Pico W
+// For Pico 2 W / RP2350
 // EXP1_6 (Neopixel) <-> PIN17 (GP13)
 // 
 #include <stdint.h>

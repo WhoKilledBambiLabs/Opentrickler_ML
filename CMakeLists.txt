@@ -34,6 +34,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 message(STATUS "Configuring ${PROJECT_NAME} for PICO_BOARD='${PICO_BOARD}' PICO_PLATFORM='${PICO_PLATFORM}'")
 
+if (NOT PICO_BOARD STREQUAL "pico2_w")
+    message(FATAL_ERROR
+        "This OpenTrickler ML firmware is supported only on Raspberry Pi Pico 2 W / RP2350. "
+        "Pico W / RP2040 support is intentionally disabled because the current AI tuning, REST, OTA, "
+        "web portal, and runtime-learning feature set exceeds the RP2040's 256 KB RAM budget. "
+        "Build with -DPICO_BOARD=pico2_w.")
+endif()
+
 # Set flags and directory variables
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -DDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -DDEBUG")
@@ -57,14 +65,9 @@ add_executable("${TARGET_NAME}")
 # Include source
 include_directories(${SRC_DIRECTORY})
 
-# Pull in FreeRTOS using the platform-matched RP2 port.
-if (PICO_RP2350)
-    set(FREERTOS_PORT_IMPORT
-        ${FREERTOS_SRC_DIRECTORY}/portable/ThirdParty/GCC/RP2350_ARM_NTZ/FreeRTOS_Kernel_import.cmake)
-else()
-    set(FREERTOS_PORT_IMPORT
-        ${FREERTOS_SRC_DIRECTORY}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
-endif()
+# Pull in the RP2350 FreeRTOS port. Pico W / RP2040 is intentionally unsupported.
+set(FREERTOS_PORT_IMPORT
+    ${FREERTOS_SRC_DIRECTORY}/portable/ThirdParty/GCC/RP2350_ARM_NTZ/FreeRTOS_Kernel_import.cmake)
 message(STATUS "Using FreeRTOS port import: ${FREERTOS_PORT_IMPORT}")
 include(${FREERTOS_PORT_IMPORT})
 

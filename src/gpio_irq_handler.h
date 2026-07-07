@@ -5,7 +5,7 @@
 #include "pico/sync.h"
 
 /*
-    RP2040/RP2350 expose one shared callback registration for GPIO interrupts.
+    RP2350 exposes one shared callback registration for GPIO interrupts.
     This header creates an interface using a jump table,
     allowing the user to attach pin and core specific callback functions.
 
@@ -18,7 +18,7 @@
     and
 
     #define HIGHEST_INTERRUPT_PIN 15 //for example
-    To safe some memory in the jump table,
+    To save some memory in the jump table,
     but disabling interrupts on pins higher than specified.
 */
 

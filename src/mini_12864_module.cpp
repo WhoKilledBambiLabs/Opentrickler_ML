@@ -16,7 +16,7 @@
 //            ------
 //             EXP2
 // 
-// For Pico W
+// For Pico 2 W / RP2350
 // EXP1_2 (BTN_ENC) <-> PIN29 (GP22)
 // EXP2_5 (ENCODER2) <-> PIN19 (GP14)
 // EXP2_3 (ENCODER1) <-> PIN20 (GP15)

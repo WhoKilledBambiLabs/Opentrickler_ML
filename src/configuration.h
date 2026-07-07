@@ -3,7 +3,7 @@
 
 #include "hardware/spi.h"
 #include "hardware/uart.h"
-#include "raspberrypi_pico_w_config.h"
+#include "raspberrypi_pico2_w_config.h"
 
 
 #endif  // CONFIGURATION_H_

@@ -1174,7 +1174,7 @@
                                 <div class="card-body">
                                     <h3 class="card-title">Upload From This PC</h3>
                                     <p class="text-sm">After building, upload the binary from PowerShell:</p>
-                                    <pre class="text-xs whitespace-pre-wrap bg-base-300 rounded-box p-3">python C:\OT\AI\tools\ota_upload.py --host 192.168.40.88 --bin C:\OT\AI\build-pico2w-release\app.bin</pre>
+                                    <pre class="text-xs whitespace-pre-wrap bg-base-300 rounded-box p-3">python tools/ota_upload.py --host &lt;device-ip-or-hostname&gt; --bin build-pico2w-release/app.bin --apply</pre>
                                     <p class="text-sm">Use the UF2 only for USB flashing. OTA staging uses the companion app.bin because it is the raw flash image.</p>
                                 </div>
                             </div>

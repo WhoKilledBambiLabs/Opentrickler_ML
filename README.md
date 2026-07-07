@@ -1,20 +1,28 @@
 # OpenTrickler ML Firmware
 
-Private beta firmware for the OpenTrickler RP2040/RP2350 controller, with profile-aware flow characterization, machine calibration, runtime learning, steering controls, REST status endpoints, and OTA staging.
+Private beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 controller, with profile-aware flow characterization, machine calibration, runtime learning, steering controls, REST status endpoints, and OTA staging.
 
 > Early beta: this firmware controls reloading equipment. Verify every charge with a calibrated scale, supervise all operation, and keep a known-good UF2 rollback image available.
 
 ## Project Status
 
 - Current beta identity: `2026.06.16-beta.8`
-- Primary target: Raspberry Pi Pico 2 W / RP2350
-- Also builds for: Raspberry Pi Pico W / RP2040
+- Supported controller: Raspberry Pi Pico 2 W / RP2350 only
+- Unsupported controller: Raspberry Pi Pico W / RP2040
 - Repository status: private beta, not ready for broad public release
 - Documentation site: [docs/index.html](docs/index.html)
 
+## Pico 2 W / RP2350 Only
+
+This firmware intentionally does not support the original Pico W / RP2040 controller.
+
+The current ML firmware combines AI characterization, runtime learning, REST telemetry, OTA staging, Wi-Fi portal code, scale drivers, and recovery logic. That feature set now exceeds the RP2040's 256 KB RAM budget; the Pico W build overflows RAM during linking. Pico 2 W / RP2350 provides 512 KB RAM and is the supported hardware baseline for this beta.
+
+The build system enforces this. Any attempt to configure with `-DPICO_BOARD=pico_w` fails immediately with a clear message instead of producing a risky or partial firmware image.
+
 ## What Is Different From Original OpenTrickler Firmware
 
-This branch is based on the OpenTrickler RP2040 controller firmware, but adds an adaptive tuning layer around the existing charge workflow.
+This branch is based on the OpenTrickler controller firmware, but the ML beta target is Pico 2 W / RP2350 only. It adds an adaptive tuning layer around the existing charge workflow.
 
 - Adds AI flow characterization for coarse, trim, fine, and micro-recovery behavior.
 - Adds machine calibration for scale response, settle timing, open-loop flow, and tail behavior.
@@ -24,7 +32,7 @@ This branch is based on the OpenTrickler RP2040 controller firmware, but adds an
 - Adds two-stage final recovery: `fine_recover` for larger underthrows and `micro_heal` near target.
 - Adds REST endpoints for AI status, model history, steering, charge state, system information, and OTA staging.
 - Adds a web-portal AI tuning panel for characterization, calibration, save/apply, and steering.
-- Adds Pico 2 W / RP2350 support while keeping Pico W / RP2040 support.
+- Moves the ML beta hardware baseline to Pico 2 W / RP2350 because RP2040 RAM is no longer sufficient.
 - Fixes and hardens several AI telemetry and recovery behaviors found during beta testing.
 
 ## What Is Intentionally Not In This Repository
@@ -132,14 +140,6 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
 cmake --build build-pico2w-release --config Release
 ```
 
-Pico W build:
-
-```powershell
-.\configure_env.ps1
-cmake -B build-picow-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=pico_w
-cmake --build build-picow-release --config Release
-```
-
 Useful outputs:
 
 - `build-pico2w-release/app.uf2`: USB BOOTSEL flashing
@@ -166,7 +166,7 @@ Use USB rollback if OTA fails, Wi-Fi is unstable, or the version cannot be verif
 
 ## Repository Map
 
-- `.github/workflows/cmake.yml`: GitHub Actions firmware build for Pico W and Pico 2 W.
+- `.github/workflows/cmake.yml`: GitHub Actions firmware build for Pico 2 W / RP2350.
 - `docs/`: GitHub Pages-ready private beta documentation.
 - `firmware_release_history/`: public-safe changelog, issue ledger, and release notes.
 - `library/`: embedded libraries and submodule content.
