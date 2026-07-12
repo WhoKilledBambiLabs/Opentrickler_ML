@@ -1,12 +1,12 @@
 # OpenTrickler ML Firmware
 
-Public beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 controller, with profile-aware flow characterization, machine calibration, runtime learning, steering controls, REST status endpoints, and OTA staging.
+Public beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 controller, with profile-aware flow characterization, machine calibration, automatic runtime learning, REST status endpoints, and OTA staging.
 
 > Early beta: this firmware controls reloading equipment. Verify every charge with a calibrated scale, supervise all operation, and keep a known-good UF2 rollback image available.
 
 ## Project Status
 
-- Current beta identity: `2026.06.16-beta.8`
+- Current beta identity: `2026.07.12-beta.10`
 - Supported controller: Raspberry Pi Pico 2 W / RP2350 only
 - Unsupported controller: Raspberry Pi Pico W / RP2040
 - Repository status: public beta, early release
@@ -34,10 +34,11 @@ This branch is based on the OpenTrickler controller firmware, but the ML beta ta
 - Adds machine calibration for scale response, settle timing, open-loop flow, and tail behavior.
 - Saves learned models per profile instead of relying only on fixed motor settings.
 - Records runtime observations during normal throws and uses them to refine the saved model.
-- Adds user steering actions: Faster, Safer, Fine Finish Faster, Bulk Closer, and Undo Last.
-- Adds two-stage final recovery: `fine_recover` for larger underthrows and `micro_heal` near target.
-- Adds REST endpoints for AI status, model history, steering, charge state, system information, and OTA staging.
-- Adds a web-portal AI tuning panel for characterization, calibration, save/apply, and steering.
+- Adds automatic phase-specific safety guards from recent coarse, fast-finish, and recovery results.
+- Adds a motor-off `tail_drain` observation before recovery so powder already in flight is not mistaken for recovery delivery.
+- Adds guarded pulse recovery when recent recovery behavior is overthrow-prone.
+- Adds REST endpoints for AI status, model history, charge state, system information, and OTA staging.
+- Adds a web-portal AI tuning panel for characterization, calibration, and save/apply.
 - Moves the ML beta hardware baseline to Pico 2 W / RP2350 because RP2040 RAM is no longer sufficient.
 - Fixes and hardens several AI telemetry and recovery behaviors found during beta testing.
 
@@ -83,17 +84,18 @@ Calibration needs at least three valid coarse and three valid fine samples. When
 
 During normal production, the firmware observes final error, phase timing, stop weights, recovery motor time, and stall count. Valid observations refine the saved profile model over time.
 
-### Steering
+### Automatic Runtime Safety
 
-The web portal can gently bias a saved model without rerunning characterization:
+Beta 10 removes manual model steering. Runtime evidence now has one authority over production behavior:
 
-- `Faster`: allows more aggressive timing where the model has confidence.
-- `Safer`: increases conservatism and finish margin.
-- `Fine Finish Faster`: nudges the fine finish phase for speed.
-- `Bulk Closer`: lets coarse/bulk delivery get closer before handoff.
-- `Undo Last`: restores the previous steering snapshot when available.
+- Stable, accurate history may tighten a stop guard.
+- Unstable or overthrow-prone history may widen a guard immediately, but never tighten it.
+- Fast-finish, recovery, and coarse-handoff outcomes are evaluated separately.
+- Complete powder arrival after fine stop is included in the fast-finish tail guard.
+- Near-target underthrows wait through a calibrated motor-off tail-drain period before recovery starts.
+- Recovery changes to bounded pulses when its recent overthrow rate is unsafe.
 
-Use one steering step at a time, then run enough charges to observe the effect.
+The learned production motor speeds remain unchanged while these guards are active. This preserves the fast transport strategy and spends additional time only near a risky handoff or finish.
 
 ### Full AI Tuning Reference
 
@@ -165,7 +167,7 @@ Calibration is most useful after hardware changes, tube changes, scale changes, 
 4. Let the controller charge, settle, and recover if needed.
 5. Remove the pan only when prompted.
 6. Verify every charge.
-7. Watch for repeatable under/over behavior before applying steering.
+7. Watch for repeatable under/over behavior; re-characterize if the setup no longer matches the saved model.
 
 ## Build From Source
 

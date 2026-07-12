@@ -157,6 +157,7 @@ static float live_model_fine_flow_gps = 0.0f;
 static float live_model_fine_tail_gn = 0.0f;
 static ai_tuning_session_t charge_mode_ai_session_snapshot;
 static ai_profile_model_t charge_mode_runtime_model;
+static ai_runtime_profile_stats_t charge_mode_runtime_stats;
 static ai_profile_model_t charge_mode_salvage_model;
 
 static bool charge_mode_is_valid_scale_measurement(float measurement);
@@ -552,6 +553,35 @@ static float ai_model_predict_flow_gps(const ai_profile_model_t* model,
 
     float sample_speed = fmaxf(samples[nearest_idx].speed_rps, 0.1f);
     return fmaxf(0.0f, samples[nearest_idx].flow_gps * (speed_rps / sample_speed));
+}
+
+static float ai_model_tail_for_speed(const ai_flow_sample_t* samples,
+                                     uint8_t count,
+                                     float speed_rps,
+                                     float fallback_tail_gn) {
+    if (samples == NULL || count == 0 || speed_rps <= 0.0f) {
+        return fmaxf(fallback_tail_gn, 0.0f);
+    }
+
+    bool found = false;
+    float nearest_delta = 0.0f;
+    float nearest_tail = fallback_tail_gn;
+    for (uint8_t idx = 0; idx < count; idx++) {
+        const ai_flow_sample_t* sample = &samples[idx];
+        if (sample->speed_rps <= 0.0f ||
+            sample->flow_gps <= 0.001f ||
+            sample->delivered_weight <= 0.0f ||
+            !isfinite(sample->tail_weight)) {
+            continue;
+        }
+        float delta = fabsf(sample->speed_rps - speed_rps);
+        if (!found || delta < nearest_delta) {
+            found = true;
+            nearest_delta = delta;
+            nearest_tail = sample->tail_weight;
+        }
+    }
+    return fmaxf(nearest_tail, 0.0f);
 }
 
 static float ai_model_estimate_speed_for_fine_flow(const ai_profile_model_t* model,
@@ -1053,6 +1083,12 @@ void charge_mode_wait_for_complete() {
                                  ai_tuning_get_enabled_model_copy(selected_profile_idx, &runtime_model) &&
                                  runtime_model.valid &&
                                  runtime_model.enabled;
+    memset(&charge_mode_runtime_stats, 0, sizeof(charge_mode_runtime_stats));
+    ai_runtime_profile_stats_t& runtime_stats = charge_mode_runtime_stats;
+    bool runtime_stats_available = runtime_model_enabled &&
+                                   ai_tuning_get_runtime_profile_stats(selected_profile_idx,
+                                                                       &runtime_stats) &&
+                                   runtime_stats.valid;
     ai_tuning_config_t* ai_config = ai_tuning_get_config();
     live_runtime_model_active = runtime_model_enabled;
     last_charge_used_runtime_model = runtime_model_enabled;
@@ -1231,6 +1267,28 @@ void charge_mode_wait_for_complete() {
                     settle_buffer.getSd() < charge_mode_config.eeprom_charge_mode_data.set_point_sd_margin) {
                     break;
                 }
+            }
+        }
+
+        return latest;
+    };
+
+    auto observe_motor_off_weight = [&](uint32_t watch_ms, float fallback_value) -> float {
+        TickType_t start_tick = xTaskGetTickCount();
+        float latest = fallback_value;
+
+        while ((uint32_t)((xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS) < watch_ms) {
+            if (button_wait_for_input(false) == BUTTON_RST_PRESSED) {
+                emergency_exit();
+                return latest;
+            }
+
+            float measurement = latest;
+            if (scale_block_wait_for_next_measurement(120, &measurement) &&
+                charge_mode_is_valid_scale_measurement(measurement) &&
+                !charge_mode_is_cup_removed_measurement(measurement)) {
+                latest = measurement;
+                charge_mode_update_true_final_measurement(measurement);
             }
         }
 
@@ -1416,18 +1474,29 @@ void charge_mode_wait_for_complete() {
     else if (runtime_model_enabled) {
         float bulk_speed = runtime_model.coarse_best_speed_rps;
         float bulk_flow = runtime_model.coarse_best_flow_gps;
-        float bulk_tail = runtime_model.coarse_tail_gn;
-        bool bulk_choice_safe = ai_model_choose_flow_sample(runtime_model.coarse_samples,
+        float bulk_tail = ai_model_tail_for_speed(runtime_model.coarse_samples,
+                                                  runtime_model.coarse_sample_count,
+                                                  bulk_speed,
+                                                  runtime_model.coarse_tail_gn);
+        bool bulk_choice_safe = isfinite(bulk_speed) &&
+                                isfinite(bulk_flow) &&
+                                isfinite(bulk_tail) &&
+                                bulk_speed > 0.0f &&
+                                bulk_flow > 0.001f &&
+                                bulk_tail >= 0.0f;
+        if (!bulk_choice_safe) {
+            bulk_choice_safe = ai_model_choose_flow_sample(runtime_model.coarse_samples,
                                                             runtime_model.coarse_sample_count,
                                                             false,
                                                             ai_config->noise_margin,
                                                             &bulk_speed,
                                                             &bulk_flow,
                                                             &bulk_tail);
+        }
 
-            float trim_speed = runtime_model.coarse_trim_speed_rps;
-            float trim_flow = runtime_model.coarse_trim_flow_gps;
-            float trim_tail = runtime_model.coarse_trim_tail_gn;
+        float trim_speed = runtime_model.coarse_trim_speed_rps;
+        float trim_flow = runtime_model.coarse_trim_flow_gps;
+        float trim_tail = runtime_model.coarse_trim_tail_gn;
         if (trim_speed <= 0.0f || trim_flow <= 0.0f) {
             (void)ai_model_choose_flow_sample(runtime_model.coarse_samples,
                                               runtime_model.coarse_sample_count,
@@ -1441,13 +1510,16 @@ void charge_mode_wait_for_complete() {
         float fine_speed = runtime_model.fine_best_speed_rps;
         float fine_flow = runtime_model.fine_best_flow_gps;
         float fine_tail = runtime_model.fine_tail_gn;
-        (void)ai_model_choose_flow_sample(runtime_model.fine_samples,
-                                          runtime_model.fine_sample_count,
-                                          false,
-                                          ai_config->noise_margin,
-                                          &fine_speed,
-                                          &fine_flow,
-                                          &fine_tail);
+        if (!isfinite(fine_speed) || !isfinite(fine_flow) || !isfinite(fine_tail) ||
+            fine_speed <= 0.0f || fine_flow <= 0.001f || fine_tail < 0.0f) {
+            (void)ai_model_choose_flow_sample(runtime_model.fine_samples,
+                                              runtime_model.fine_sample_count,
+                                              false,
+                                              ai_config->noise_margin,
+                                              &fine_speed,
+                                              &fine_flow,
+                                              &fine_tail);
+        }
 
         bulk_speed = fmaxf(coarse_trickler_min_speed, fminf(bulk_speed, ai_coarse_trickler_max_speed));
         trim_speed = fmaxf(coarse_trickler_min_speed, fminf(trim_speed, ai_coarse_trickler_max_speed));
@@ -1469,6 +1541,8 @@ void charge_mode_wait_for_complete() {
             fabsf(bulk_speed - runtime_model.coarse_best_speed_rps) <= 0.05f;
         const bool bulk_matches_trim =
             trim_speed > 0.0f && fabsf(bulk_speed - trim_speed) <= 0.05f;
+        const bool fine_matches_saved_best =
+            fabsf(fine_speed - runtime_model.fine_best_speed_rps) <= 0.05f;
         const bool machine_calibrated = runtime_model.machine.valid;
         if (machine_calibrated) {
             if (runtime_model.machine.coarse_open_loop_flow_gps > 0.05f &&
@@ -1506,10 +1580,49 @@ void charge_mode_wait_for_complete() {
         }
         else {
             const float target_weight = charge_mode_config.target_charge_weight;
+            const float learned_runtime_bias = isfinite(runtime_model.runtime_bias_gn)
+                ? runtime_model.runtime_bias_gn
+                : 0.0f;
+            const float signed_runtime_bias =
+                fmaxf(-0.08f,
+                      fminf(learned_runtime_bias,
+                            fmaxf(0.75f, target_weight * 0.03f)));
             const float positive_bias =
-                fminf(fmaxf(runtime_model.runtime_bias_gn, 0.0f),
-                      fmaxf(0.75f, target_weight * 0.03f));
+                fmaxf(signed_runtime_bias, 0.0f);
             const float target_tolerance = charge_mode_acceptance_tolerance();
+            const bool runtime_safety_ready =
+                runtime_stats_available && runtime_stats.observation_count >= 6u;
+            const bool fast_finish_guard_active =
+                runtime_safety_ready &&
+                runtime_stats.fast_finish_count >= 4u &&
+                runtime_stats.fast_finish_over_rate > 0.15f;
+            const bool recovery_guard_active =
+                runtime_safety_ready &&
+                runtime_stats.recovery_phase_count >= 4u &&
+                runtime_stats.recovery_over_rate > 0.15f;
+            const bool coarse_guard_active =
+                runtime_safety_ready &&
+                runtime_stats.coarse_late_count >= 3u &&
+                runtime_stats.coarse_late_rate > 0.15f;
+            const bool production_coarse_stable =
+                runtime_stats_available &&
+                bulk_matches_saved_best &&
+                !bulk_matches_trim &&
+                runtime_stats.coarse_tail_count >= 6u &&
+                runtime_stats.coarse_tail_mean_gn > 0.0f &&
+                runtime_stats.coarse_tail_p95_gn >= runtime_stats.coarse_tail_mean_gn &&
+                runtime_stats.coarse_tail_sd_gn <=
+                    fmaxf(0.35f, runtime_stats.coarse_tail_mean_gn * 0.15f);
+            const bool production_fine_ready =
+                runtime_stats_available &&
+                fine_matches_saved_best &&
+                runtime_stats.fine_tail_count >= 6u &&
+                runtime_stats.fine_tail_mean_gn > 0.0f &&
+                runtime_stats.fine_tail_p90_gn >= runtime_stats.fine_tail_mean_gn;
+            const bool production_fine_stable =
+                production_fine_ready &&
+                runtime_stats.fine_tail_sd_gn <=
+                    fmaxf(0.08f, runtime_stats.fine_tail_mean_gn * 0.25f);
             float machine_coarse_tail_guard = 0.0f;
             if (machine_calibrated) {
                 const float machine_avg_tail =
@@ -1536,13 +1649,16 @@ void charge_mode_wait_for_complete() {
                 trim_speed < bulk_speed - 0.03f &&
                 trim_flow < bulk_flow * 0.95f;
             const float production_safe_coarse_tail =
-                fmaxf(2.50f, fminf(4.00f, target_weight * 0.10f));
+                machine_calibrated
+                    ? fmaxf(4.00f, target_weight * 0.25f)
+                    : fmaxf(3.00f, target_weight * 0.14f);
             bool rejected_coarse_choice = false;
             float rejected_coarse_speed = bulk_speed;
             float rejected_coarse_tail = bulk_tail;
             if (native_trim_coarse &&
-                (bulk_tail > fmaxf(6.0f, target_weight * 0.14f) ||
-                 (bulk_flow > trim_flow * 2.50f && trim_tail <= fmaxf(5.0f, target_weight * 0.12f)))) {
+                trim_tail + fmaxf(0.25f, target_weight * 0.008f) < bulk_tail &&
+                (bulk_tail > production_safe_coarse_tail ||
+                 bulk_flow > trim_flow * 2.50f)) {
                 rejected_coarse_choice = true;
                 rejected_coarse_speed = bulk_speed;
                 rejected_coarse_tail = bulk_tail;
@@ -1636,6 +1752,35 @@ void charge_mode_wait_for_complete() {
             else {
                 fine_tail = fmaxf(fine_tail, learned_fast_tail);
             }
+            float production_fast_tail_guard = 0.0f;
+            float production_fast_tail_cap = 0.0f;
+            const bool production_fine_can_tighten =
+                production_fine_stable &&
+                !fast_finish_guard_active &&
+                runtime_stats.over_rate <= 0.10f;
+            if (production_fine_ready) {
+                production_fast_tail_guard = production_fine_stable && !fast_finish_guard_active
+                    ? runtime_stats.fine_tail_p90_gn
+                    : runtime_stats.fine_tail_p95_gn;
+                production_fast_tail_cap = runtime_stats.fine_tail_p95_gn;
+                if (runtime_stats.fast_finish_tail_count >= 4u) {
+                    production_fast_tail_guard =
+                        fmaxf(production_fast_tail_guard,
+                              runtime_stats.fast_finish_tail_p90_gn);
+                    production_fast_tail_cap =
+                        fmaxf(production_fast_tail_cap,
+                              runtime_stats.fast_finish_tail_p95_gn);
+                }
+                production_fast_tail_guard =
+                    fmaxf(0.0f, fminf(production_fast_tail_guard, fine_tail_cap));
+                production_fast_tail_cap =
+                    fmaxf(production_fast_tail_guard,
+                          fminf(production_fast_tail_cap, fine_tail_cap));
+
+                fine_tail = production_fine_can_tighten
+                    ? production_fast_tail_guard
+                    : fmaxf(fine_tail, production_fast_tail_guard);
+            }
 
             float learned_micro_tail = isfinite(runtime_model.fine_micro_tail_gn)
                 ? runtime_model.fine_micro_tail_gn
@@ -1645,18 +1790,19 @@ void charge_mode_wait_for_complete() {
                 ? runtime_model.fine_stop_safety_bias_gn
                 : (0.055f * (1.0f - fast_tail_confidence) + 0.010f);
             finish_safety_bias = fmaxf(0.004f, fminf(finish_safety_bias, 0.110f));
-            const float steering_bulk_bias = isfinite(runtime_model.steering_bulk_bias_gn)
-                ? runtime_model.steering_bulk_bias_gn
-                : 0.0f;
-            const float steering_fine_bias = isfinite(runtime_model.steering_fine_bias_gn)
-                ? runtime_model.steering_fine_bias_gn
-                : 0.0f;
-            const float steering_recovery_speed_scale =
-                fmaxf(-0.35f,
-                      fminf(0.60f,
-                            isfinite(runtime_model.steering_recovery_speed_scale)
-                                ? runtime_model.steering_recovery_speed_scale
-                                : 0.0f));
+            if (fast_finish_guard_active) {
+                finish_safety_bias =
+                    fmaxf(finish_safety_bias, target_tolerance * 0.75f);
+            }
+
+            if (fast_finish_guard_active || recovery_guard_active || coarse_guard_active) {
+                snprintf(live_ai_decision,
+                         sizeof(live_ai_decision),
+                         "auto guard fast %.0f%% recovery %.0f%% late coarse %.0f%%",
+                         runtime_stats.fast_finish_over_rate * 100.0f,
+                         runtime_stats.recovery_over_rate * 100.0f,
+                         runtime_stats.coarse_late_rate * 100.0f);
+            }
 
             live_model_bulk_speed_rps = bulk_speed;
             live_model_bulk_flow_gps = bulk_flow;
@@ -1706,13 +1852,13 @@ void charge_mode_wait_for_complete() {
                                         fminf(coarse_tail_guard * 0.45f,
                                               fmaxf(1.50f, target_weight * 0.055f)));
             }
-            if (machine_coarse_tail_guard > 0.0f) {
-                // Coarse trim is still the coarse motor. If calibration or runtime
-                // throws show a large coarse flight tail, do not let an old low cap
-                // pretend this phase can safely stop within a fine-sized window.
-                float learned_trim_floor = fmaxf(trim_tail,
-                                                 machine_coarse_tail_guard *
-                                                     (derived_trim_coarse ? 0.72f : 0.85f));
+            if (machine_coarse_tail_guard > 0.0f && derived_trim_coarse) {
+                // A synthesized glide has no measured tail of its own. Native trim
+                // samples do, so do not contaminate them with production-speed tail.
+                float learned_trim_floor = fmaxf(
+                    trim_tail,
+                    fminf(machine_coarse_tail_guard * 0.30f,
+                          fmaxf(1.20f, target_weight * 0.045f)));
                 trim_tail_guard = fmaxf(trim_tail_guard, learned_trim_floor);
             }
             const float trim_tail_cap = machine_coarse_tail_guard > 0.0f
@@ -1729,8 +1875,13 @@ void charge_mode_wait_for_complete() {
             if (machine_coarse_tail_guard > 0.0f) {
                 effective_bulk_tail = fmaxf(effective_bulk_tail, machine_coarse_tail_guard);
             }
-            float coarse_handoff_bias = fminf(positive_bias * 0.45f,
-                                              fmaxf(0.35f, target_weight * 0.025f));
+            float coarse_handoff_bias =
+                fmaxf(-0.05f,
+                      fminf(signed_runtime_bias * 0.45f,
+                            fmaxf(0.35f, target_weight * 0.025f)));
+            if (coarse_guard_active) {
+                coarse_handoff_bias = fmaxf(coarse_handoff_bias, 0.0f);
+            }
             float learned_overcharge_guard = fminf(0.70f, positive_bias * 0.78f);
             // The first coarse burst is open-loop because the scale response lags powder flight.
             // Keep fine assist out of this burst so the model has one fast flow to bound.
@@ -1757,21 +1908,14 @@ void charge_mode_wait_for_complete() {
                         isfinite(runtime_model.machine.coarse_uncertainty_gn)
                             ? fmaxf(runtime_model.machine.coarse_uncertainty_gn, 0.0f)
                             : 0.0f;
-                    const float machine_latency_s =
-                        (fmaxf(runtime_model.machine.scale_sample_period_ms, 0.0f) +
-                         fmaxf(runtime_model.machine.coarse_first_response_ms, 0.0f)) /
-                        1000.0f;
-                    const float machine_latency_margin =
-                        fminf(fmaxf(0.85f, target_weight * 0.040f),
-                              bulk_phase_flow * machine_latency_s * 0.85f);
                     const float machine_uncertainty_margin =
-                        fminf(fmaxf(2.25f, target_weight * 0.070f),
-                              machine_uncertainty * 0.70f);
+                        fmaxf(0.10f,
+                              fminf(machine_uncertainty * 0.55f,
+                                    fmaxf(0.65f, target_weight * 0.018f)));
                     const float machine_min_bulk_margin =
                         fine_window +
                         machine_coarse_tail_guard +
-                        machine_uncertainty_margin +
-                        machine_latency_margin;
+                        machine_uncertainty_margin;
                     bulk_handoff_margin =
                         fmaxf(bulk_handoff_margin, machine_min_bulk_margin);
                 }
@@ -1786,8 +1930,33 @@ void charge_mode_wait_for_complete() {
                               runtime_model.machine.recommended_trim_stop_gn);
                 }
             }
-            bulk_handoff_margin += steering_bulk_bias;
-            trim_stop_margin += steering_bulk_bias * 0.45f;
+            bool have_trim_coarse = trim_speed > 0.0f &&
+                                    trim_flow > 0.0f &&
+                                    trim_speed < bulk_speed - 0.01f &&
+                                    trim_flow < bulk_flow * 0.95f &&
+                                    trim_tail_guard <= fmaxf(4.00f, target_weight * 0.10f);
+            float production_bulk_floor = 0.0f;
+            if (production_coarse_stable &&
+                !rejected_coarse_choice &&
+                !have_trim_coarse) {
+                const float production_tail_guard =
+                    fmaxf(runtime_stats.coarse_tail_p95_gn,
+                          runtime_stats.coarse_tail_mean_gn +
+                              runtime_stats.coarse_tail_sd_gn * 1.65f);
+                const float production_uncertainty =
+                    fmaxf(0.06f,
+                          fminf(runtime_stats.coarse_tail_sd_gn * 0.45f, 0.35f));
+                const float production_bulk_margin =
+                    production_tail_guard + fine_window + production_uncertainty;
+                const float production_fine_reserve = production_fine_stable
+                    ? fmaxf(fine_window * 0.70f,
+                            runtime_stats.fine_tail_p90_gn + target_tolerance * 2.0f)
+                    : fine_window;
+                production_bulk_floor = production_tail_guard + production_fine_reserve;
+                bulk_handoff_margin = fminf(bulk_handoff_margin,
+                                             production_bulk_margin);
+            }
+
             const float max_bulk_handoff_margin =
                 desired_fine_window + fmaxf(18.0f, target_weight * 0.55f) +
                 positive_bias * 0.60f;
@@ -1800,11 +1969,10 @@ void charge_mode_wait_for_complete() {
             bulk_handoff_margin = fminf(bulk_handoff_margin, max_bulk_handoff_margin);
             bulk_handoff_margin = fmaxf(bulk_handoff_margin,
                                         trim_stop_margin + 0.75f);
-            bool have_trim_coarse = trim_speed > 0.0f &&
-                                    trim_flow > 0.0f &&
-                                    trim_speed < bulk_speed - 0.01f &&
-                                    trim_flow < bulk_flow * 0.95f &&
-                                    trim_tail_guard <= fmaxf(4.00f, target_weight * 0.10f);
+            if (production_bulk_floor > 0.0f) {
+                bulk_handoff_margin = fmaxf(bulk_handoff_margin,
+                                             production_bulk_floor);
+            }
             if (!have_trim_coarse &&
                 trim_speed > 0.0f &&
                 trim_flow > 0.0f &&
@@ -1834,6 +2002,43 @@ void charge_mode_wait_for_complete() {
             bool recovery_motor_running = false;
             const float micro_heal_entry_gn = fmaxf(0.18f, target_tolerance * 7.0f);
             const float recovery_force_feed_gn = fmaxf(0.030f, target_tolerance * 1.55f);
+            const float production_fine_stop_floor = production_fine_ready
+                ? fminf(fine_tail_cap,
+                        production_fast_tail_guard + target_tolerance * 0.50f)
+                : 0.0f;
+            const float production_fine_stop_cap = production_fine_can_tighten
+                ? fminf(fine_tail_cap,
+                        production_fast_tail_cap + target_tolerance)
+                : 0.0f;
+            const float passive_tail_watch_limit_gn =
+                fmaxf(0.18f,
+                      fminf(0.40f,
+                            production_fast_tail_guard + target_tolerance * 2.0f));
+            const float configured_tail_watch_ms =
+                machine_calibrated && isfinite(runtime_model.machine.post_finish_watch_ms)
+                    ? runtime_model.machine.post_finish_watch_ms
+                    : 750.0f;
+            const uint32_t passive_tail_watch_ms =
+                (uint32_t)lroundf(fmaxf(600.0f, fminf(configured_tail_watch_ms, 1000.0f)));
+
+            auto apply_passive_tail_watch = [&](float current_weight) -> float {
+                if (final_recovery_active ||
+                    !charge_mode_is_valid_scale_measurement(current_weight)) {
+                    return current_weight;
+                }
+
+                float under_weight = target_weight - current_weight;
+                if (under_weight <= target_tolerance ||
+                    under_weight > passive_tail_watch_limit_gn) {
+                    return current_weight;
+                }
+
+                stop_all_motors();
+                charge_mode_set_live_phase("tail_drain",
+                                           under_weight,
+                                           production_fine_stop_floor);
+                return observe_motor_off_weight(passive_tail_watch_ms, current_weight);
+            };
 
             auto stop_recovery_motor_timer = [&]() {
                 if (recovery_motor_running) {
@@ -2248,6 +2453,10 @@ void charge_mode_wait_for_complete() {
                     if (charge_mode_is_valid_scale_measurement(current_weight)) {
                         charge_mode_update_true_final_measurement(current_weight);
                     }
+                    current_weight = apply_passive_tail_watch(current_weight);
+                    if (charge_mode_config.charge_mode_state == CHARGE_MODE_EXIT) {
+                        return;
+                    }
 
                     float settled_under_weight = target_weight - current_weight;
                     if (charge_mode_is_valid_scale_measurement(current_weight) &&
@@ -2300,7 +2509,6 @@ void charge_mode_wait_for_complete() {
                     predicted_fine_tail +
                     finish_safety_bias * (1.10f - active_tail_confidence * 0.45f) +
                     ai_config->noise_margin * (micro_finish_zone ? 0.12f : 0.25f);
-                learned_tail_guard += steering_fine_bias;
                 if (low_tail_tube && active_tail_confidence >= 0.35f) {
                     learned_tail_guard -= target_tolerance * 0.35f;
                 }
@@ -2327,7 +2535,6 @@ void charge_mode_wait_for_complete() {
                 float recovery_micro_speed = runtime_model.fine_recovery_speed_rps > 0.0f
                     ? runtime_model.fine_recovery_speed_rps
                     : fmaxf(fine_trickler_min_speed, fminf(0.20f, fine_speed * 0.04f));
-                recovery_micro_speed *= (1.0f + steering_recovery_speed_scale);
                 recovery_micro_speed = fmaxf(fine_trickler_min_speed,
                                              fminf(recovery_micro_speed,
                                                    fminf(low_tail_tube ? 0.75f : 0.55f, fine_speed)));
@@ -2429,8 +2636,7 @@ void charge_mode_wait_for_complete() {
                     : fminf(curved_flow * 0.26f, fmaxf(0.018f, finish_buffer_gn * 0.55f));
                 float fine_tail_margin = predicted_fine_tail;
                 float bias_stop_margin =
-                                         finish_safety_bias * (1.0f - active_tail_confidence * 0.35f) +
-                                         steering_fine_bias;
+                                         finish_safety_bias * (1.0f - active_tail_confidence * 0.35f);
                 float fine_stop_margin = fine_tail_margin +
                                          scale_lag_margin +
                                          momentum_margin * (micro_finish_zone ? 0.20f : 0.50f) +
@@ -2449,11 +2655,18 @@ void charge_mode_wait_for_complete() {
                     fine_stop_margin = fmaxf(fine_stop_margin, learned_tail_guard);
                 }
                 fine_stop_margin = fminf(fine_stop_margin, max_fine_stop_margin);
+                if (!micro_finish_zone && production_fine_stop_floor > 0.0f) {
+                    fine_stop_margin = fmaxf(fine_stop_margin,
+                                             production_fine_stop_floor);
+                    if (production_fine_stop_cap > 0.0f) {
+                        fine_stop_margin = fminf(fine_stop_margin,
+                                                 production_fine_stop_cap);
+                    }
+                }
                 if (micro_heal_active) {
                     fine_stop_margin = learned_micro_tail * (low_tail_tube ? 0.45f : 0.75f) +
                                        recovery_micro_flow * (low_tail_tube ? 0.025f : 0.040f) +
-                                       momentum_margin * 0.12f +
-                                       fmaxf(steering_fine_bias, -target_tolerance * 0.35f);
+                                       momentum_margin * 0.12f;
                     fine_stop_margin = fmaxf(low_tail_tube ? target_tolerance * 0.30f
                                                            : target_tolerance * 0.45f,
                                              fminf(low_tail_tube ? target_tolerance * 0.85f
@@ -2506,10 +2719,18 @@ void charge_mode_wait_for_complete() {
                             fminf(high_tail_tube ? 0.110f : 0.085f,
                                   learned_micro_tail * (high_tail_tube ? 0.85f : 0.72f) +
                                       target_tolerance * (high_tail_tube ? 0.50f : 0.35f)));
+                if (recovery_guard_active) {
+                    recovery_feed_stop_margin =
+                        fminf(recovery_feed_stop_margin, target_tolerance * 0.95f);
+                }
+                const float active_recovery_force_feed_gn = recovery_guard_active
+                    ? target_tolerance * 1.05f
+                    : recovery_force_feed_gn;
                 bool recovery_must_feed =
                     final_recovery_active &&
                     charge_mode_is_valid_scale_measurement(current_weight) &&
-                    remaining_weight > fmaxf(recovery_force_feed_gn, recovery_feed_stop_margin) &&
+                    remaining_weight >
+                        fmaxf(active_recovery_force_feed_gn, recovery_feed_stop_margin) &&
                     remaining_weight <= micro_heal_entry_gn;
                 if (recovery_must_feed) {
                     // Recovery is allowed to be slow, but not motionless while
@@ -2546,6 +2767,10 @@ void charge_mode_wait_for_complete() {
                     }
                     if (charge_mode_is_valid_scale_measurement(current_weight)) {
                         charge_mode_update_true_final_measurement(current_weight);
+                    }
+                    current_weight = apply_passive_tail_watch(current_weight);
+                    if (charge_mode_config.charge_mode_state == CHARGE_MODE_EXIT) {
+                        return;
                     }
 
                     float settled_under_weight = target_weight - current_weight;
@@ -2604,15 +2829,24 @@ void charge_mode_wait_for_complete() {
                         recovery_last_progress_tick = xTaskGetTickCount();
                         live_recovery_end_weight_gn = current_weight;
                     }
-                    if (micro_heal_active && high_tail_tube) {
-                        float micro_target_margin =
-                            fmaxf(target_tolerance * 0.85f,
-                                  fminf(0.055f,
-                                        fmaxf(learned_micro_tail * 0.45f,
-                                              target_tolerance * 0.90f)));
+                    const bool pulse_recovery_active =
+                        micro_heal_active && (high_tail_tube || recovery_guard_active);
+                    if (pulse_recovery_active) {
+                        const bool guarded_balanced_recovery =
+                            recovery_guard_active && !high_tail_tube;
+                        float micro_target_margin = guarded_balanced_recovery
+                            ? fmaxf(target_tolerance * 1.10f,
+                                    fminf(0.075f,
+                                          learned_micro_tail * 0.75f +
+                                              target_tolerance * 0.45f))
+                            : fmaxf(target_tolerance * 0.85f,
+                                    fminf(0.055f,
+                                          fmaxf(learned_micro_tail * 0.45f,
+                                                target_tolerance * 0.90f)));
                         if (recovery_must_feed) {
                             micro_target_margin = fminf(micro_target_margin,
-                                                        target_tolerance * 0.80f);
+                                                        target_tolerance *
+                                                            (guarded_balanced_recovery ? 0.90f : 0.80f));
                         }
                         float desired_add_gn = remaining_weight - micro_target_margin;
                         if (desired_add_gn <= 0.0f) {
@@ -2645,15 +2879,21 @@ void charge_mode_wait_for_complete() {
                             break;
                         }
 
-                        float dose_factor = remaining_weight > 0.09f ? 0.58f : 0.45f;
+                        float dose_factor = guarded_balanced_recovery
+                            ? (remaining_weight > 0.09f ? 0.38f : 0.30f)
+                            : (remaining_weight > 0.09f ? 0.58f : 0.45f);
                         uint32_t micro_dose_ms = (uint32_t)lroundf(
                             (desired_add_gn / fmaxf(recovery_micro_flow, 0.012f)) *
                             1000.0f *
                             dose_factor);
-                        uint32_t micro_max_ms = remaining_weight < 0.050f
-                            ? 260u
-                            : (remaining_weight < 0.085f ? 450u : 700u);
-                        micro_dose_ms = (uint32_t)fmaxf(70.0f,
+                        uint32_t micro_max_ms = guarded_balanced_recovery
+                            ? (remaining_weight < 0.050f
+                                   ? 180u
+                                   : (remaining_weight < 0.085f ? 300u : 500u))
+                            : (remaining_weight < 0.050f
+                                   ? 260u
+                                   : (remaining_weight < 0.085f ? 450u : 700u));
+                        micro_dose_ms = (uint32_t)fmaxf(guarded_balanced_recovery ? 60.0f : 70.0f,
                                                         fminf((float)micro_max_ms,
                                                               (float)micro_dose_ms));
 

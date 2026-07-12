@@ -63,6 +63,7 @@ static void ai_tuning_choose_best_stage_sample(const ai_flow_sample_t* samples, 
                                                float* best_speed_rps,
                                                float* best_flow_gps);
 static void ai_tuning_choose_bulk_stage_sample(const ai_flow_sample_t* samples, uint8_t count,
+                                               float target_weight,
                                                float* best_speed_rps,
                                                float* best_flow_gps);
 static void ai_tuning_choose_trim_stage_sample(const ai_flow_sample_t* samples, uint8_t count,
@@ -83,6 +84,7 @@ static float ai_tuning_estimate_fine_tail_guard(const ai_flow_sample_t* samples,
                                                 float average_tail_gn,
                                                 float target_weight);
 static void ai_tuning_filter_runtime_observations_unlocked(void);
+static void ai_tuning_clear_profile_observations_unlocked(uint8_t profile_idx);
 static void ai_tuning_reset_machine_calibration(ai_machine_calibration_t* cal);
 static void ai_tuning_update_machine_calibration_unlocked(const ai_drop_telemetry_t* telemetry);
 static void ai_tuning_sanitize_machine_calibration(ai_profile_model_t* model, float target_weight);
@@ -95,7 +97,7 @@ static void ai_tuning_sanitize_model_unlocked(ai_profile_model_t* model,
                                               float target_weight,
                                               bool preserve_enabled);
 static void ai_tuning_update_finish_profile_unlocked(ai_profile_model_t* model, float target_weight);
-static void ai_tuning_clamp_steering_unlocked(ai_profile_model_t* model);
+static void ai_tuning_clear_legacy_controller_fields_unlocked(ai_profile_model_t* model);
 static void ai_tuning_finalize_working_model_unlocked(void);
 static void ai_tuning_refresh_plan_unlocked(void);
 
@@ -110,6 +112,69 @@ static float ai_clampf(float value, float min_value, float max_value) {
         return max_value;
     }
     return value;
+}
+
+static void ai_tuning_sort_values(float* values, uint8_t count) {
+    if (values == NULL) {
+        return;
+    }
+
+    for (uint8_t idx = 1; idx < count; idx++) {
+        float value = values[idx];
+        uint8_t insert_idx = idx;
+        while (insert_idx > 0 && values[insert_idx - 1] > value) {
+            values[insert_idx] = values[insert_idx - 1];
+            insert_idx--;
+        }
+        values[insert_idx] = value;
+    }
+}
+
+static float ai_tuning_percentile(float* values, uint8_t count, float quantile) {
+    if (values == NULL || count == 0) {
+        return 0.0f;
+    }
+
+    ai_tuning_sort_values(values, count);
+    float position = ai_clampf(quantile, 0.0f, 1.0f) * (float)(count - 1u);
+    uint8_t lower_idx = (uint8_t)floorf(position);
+    uint8_t upper_idx = lower_idx + 1u < count ? (uint8_t)(lower_idx + 1u) : lower_idx;
+    float fraction = position - (float)lower_idx;
+    return values[lower_idx] + (values[upper_idx] - values[lower_idx]) * fraction;
+}
+
+static void ai_tuning_mean_and_sd(const float* values, uint8_t count,
+                                  float* mean_out, float* sd_out) {
+    if (mean_out != NULL) {
+        *mean_out = 0.0f;
+    }
+    if (sd_out != NULL) {
+        *sd_out = 0.0f;
+    }
+    if (values == NULL || count == 0) {
+        return;
+    }
+
+    float sum = 0.0f;
+    for (uint8_t idx = 0; idx < count; idx++) {
+        sum += values[idx];
+    }
+    float mean = sum / (float)count;
+    float variance = 0.0f;
+    if (count > 1u) {
+        for (uint8_t idx = 0; idx < count; idx++) {
+            float delta = values[idx] - mean;
+            variance += delta * delta;
+        }
+        variance /= (float)(count - 1u);
+    }
+
+    if (mean_out != NULL) {
+        *mean_out = mean;
+    }
+    if (sd_out != NULL) {
+        *sd_out = sqrtf(fmaxf(variance, 0.0f));
+    }
 }
 
 static bool ai_tuning_is_reasonable_weight(float value) {
@@ -153,38 +218,22 @@ static float ai_tuning_machine_bulk_handoff_margin(const ai_profile_model_t* mod
     const float uncertainty = isfinite(cal->coarse_uncertainty_gn)
         ? fmaxf(cal->coarse_uncertainty_gn, 0.0f)
         : 0.0f;
-    const float flow_gps = isfinite(cal->coarse_open_loop_flow_gps)
-        ? fmaxf(cal->coarse_open_loop_flow_gps, 0.0f)
-        : 0.0f;
-    const float latency_s =
-        (fmaxf(cal->scale_sample_period_ms, 0.0f) +
-         fmaxf(cal->coarse_first_response_ms, 0.0f)) / 1000.0f;
 
+    // Stop-to-settle tail already contains scale latency and powder in flight.
+    // Add only a bounded repeatability allowance so latency is not counted twice.
     const float uncertainty_margin =
-        fminf(fmaxf(2.25f, target_weight * 0.070f), uncertainty * 0.70f);
-    const float latency_margin =
-        fminf(fmaxf(0.85f, target_weight * 0.040f), flow_gps * latency_s * 0.85f);
+        ai_clampf(uncertainty * 0.55f,
+                  0.10f,
+                  fmaxf(0.65f, target_weight * 0.018f));
     const float margin = desired_fine_window +
                          tail_guard +
-                         uncertainty_margin +
-                         latency_margin;
+                         uncertainty_margin;
 
     const float max_margin =
         desired_fine_window + fmaxf(18.0f, target_weight * 0.55f);
     return ai_clampf(margin,
-                     desired_fine_window + 2.25f,
+                     desired_fine_window + fmaxf(0.75f, target_weight * 0.020f),
                      max_margin);
-}
-
-const char* ai_tuning_steering_action_to_string(ai_steering_action_t action) {
-    switch (action) {
-        case AI_STEERING_FASTER:              return "faster";
-        case AI_STEERING_SAFER:               return "safer";
-        case AI_STEERING_FINE_FINISH_FASTER:  return "fine_finish_faster";
-        case AI_STEERING_BULK_CLOSER:         return "bulk_closer";
-        case AI_STEERING_UNDO_LAST:           return "undo_last";
-        default:                              return "unknown";
-    }
 }
 
 const char* ai_tuning_fine_tube_profile_to_string(ai_fine_tube_profile_t profile) {
@@ -408,7 +457,7 @@ bool ai_tuning_record_drop(const ai_drop_telemetry_t* telemetry) {
             }
             else {
                 ai_tuning_sanitize_model_unlocked(&g_session.working_model,
-                                                  fmaxf(g_session.requested_target_weight, 40.0f),
+                                                  fmaxf(g_session.requested_target_weight, 1.0f),
                                                   true);
                 if (g_session.working_model.machine.valid) {
                     g_session.state = AI_TUNING_READY_TO_SAVE;
@@ -481,7 +530,7 @@ bool ai_tuning_record_drop(const ai_drop_telemetry_t* telemetry) {
             } else {
                 g_session.state = AI_TUNING_ERROR;
                 snprintf(g_session.error_message, sizeof(g_session.error_message),
-                         "Need at least one valid coarse and fine sample");
+                         "No safe coarse candidate or valid fine sample. Check tube and rerun.");
             }
         } else {
             g_session.stage_sample_index++;
@@ -580,7 +629,7 @@ bool ai_tuning_apply_params(void) {
 
     load_history_from_flash();
     ai_tuning_sanitize_model_unlocked(&g_session.working_model,
-                                      fmaxf(g_session.requested_target_weight, 40.0f),
+                                      fmaxf(g_session.requested_target_weight, 1.0f),
                                       false);
     if (!g_session.working_model.valid) {
         ai_tuning_unlock();
@@ -588,6 +637,7 @@ bool ai_tuning_apply_params(void) {
     }
     g_session.working_model.enabled = true;
     g_history.models[g_session.target_profile_idx] = g_session.working_model;
+    ai_tuning_clear_profile_observations_unlocked(g_session.target_profile_idx);
     save_history_to_flash();
 
     ai_tuning_reset_session_unlocked();
@@ -697,73 +747,217 @@ bool ai_tuning_get_enabled_model_copy(uint8_t profile_idx, ai_profile_model_t* o
     return out->valid && out->enabled;
 }
 
-bool ai_tuning_apply_steering(uint8_t profile_idx, ai_steering_action_t action) {
-    if (profile_idx >= MAX_PROFILE_CNT) {
+bool ai_tuning_get_runtime_profile_stats(uint8_t profile_idx,
+                                         ai_runtime_profile_stats_t* out) {
+    if (out == NULL || profile_idx >= MAX_PROFILE_CNT) {
         return false;
     }
 
-    if (!ai_tuning_lock(pdMS_TO_TICKS(100))) {
+    memset(out, 0, sizeof(*out));
+    if (!ai_tuning_lock(pdMS_TO_TICKS(50))) {
         return false;
     }
 
     load_history_from_flash();
-    ai_profile_model_t* model = &g_history.models[profile_idx];
-    if (!model->valid || !model->enabled) {
-        ai_tuning_unlock();
-        return false;
-    }
+    float values[AI_RUNTIME_OBSERVATION_COUNT];
+    uint8_t value_count = 0;
+    uint8_t over_count = 0;
+    uint8_t under_count = 0;
+    uint8_t fast_finish_over_count = 0;
+    uint8_t recovery_over_count = 0;
 
-    ai_tuning_clamp_steering_unlocked(model);
-    if (action == AI_STEERING_UNDO_LAST) {
-        if (!model->steering_undo_available) {
-            ai_tuning_unlock();
-            return false;
-        }
-        model->steering_bulk_bias_gn = model->steering_last_bulk_bias_gn;
-        model->steering_fine_bias_gn = model->steering_last_fine_bias_gn;
-        model->steering_recovery_speed_scale = model->steering_last_recovery_speed_scale;
-        model->steering_undo_available = 0;
-    }
-    else {
-        model->steering_last_bulk_bias_gn = model->steering_bulk_bias_gn;
-        model->steering_last_fine_bias_gn = model->steering_fine_bias_gn;
-        model->steering_last_recovery_speed_scale = model->steering_recovery_speed_scale;
-        model->steering_undo_available = 1;
-
-        switch (action) {
-            case AI_STEERING_FASTER:
-                model->steering_bulk_bias_gn -= 0.12f;
-                model->steering_fine_bias_gn -= 0.010f;
-                model->steering_recovery_speed_scale += 0.06f;
-                break;
-            case AI_STEERING_SAFER:
-                model->steering_bulk_bias_gn += 0.18f;
-                model->steering_fine_bias_gn += 0.020f;
-                model->steering_recovery_speed_scale -= 0.04f;
-                break;
-            case AI_STEERING_FINE_FINISH_FASTER:
-                model->steering_fine_bias_gn -= 0.015f;
-                model->steering_recovery_speed_scale += 0.10f;
-                break;
-            case AI_STEERING_BULK_CLOSER:
-                model->steering_bulk_bias_gn -= 0.18f;
-                break;
-            default:
-                ai_tuning_unlock();
-                return false;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        if (obs->profile_idx != profile_idx ||
+            !isfinite(obs->target_weight) ||
+            !isfinite(obs->final_error_gn) ||
+            !isfinite(obs->total_time_ms) ||
+            obs->target_weight <= 0.0f ||
+            obs->total_time_ms <= 0.0f) {
+            continue;
         }
 
-        if (model->steering_count < UINT16_MAX) {
-            model->steering_count++;
+        out->observation_count++;
+        if (obs->final_error_gn > 0.0205f) {
+            over_count++;
+        }
+        else if (obs->final_error_gn < -0.0205f) {
+            under_count++;
+        }
+        if (isfinite(obs->recovery_motor_on_ms) && obs->recovery_motor_on_ms > 50.0f) {
+            out->recovery_count++;
+        }
+
+        bool recovery_phase_started =
+            isfinite(obs->recovery_start_weight_gn) &&
+            obs->recovery_start_weight_gn > obs->target_weight * 0.55f &&
+            obs->recovery_start_weight_gn < obs->target_weight + 1.0f;
+        if (recovery_phase_started) {
+            out->recovery_phase_count++;
+            if (obs->final_error_gn > 0.0205f) {
+                recovery_over_count++;
+            }
+        }
+        else {
+            out->fast_finish_count++;
+            if (obs->final_error_gn > 0.0205f) {
+                fast_finish_over_count++;
+            }
+        }
+
+        const float desired_fine_window =
+            fmaxf(0.85f, fminf(1.10f, obs->target_weight * 0.025f));
+        if (isfinite(obs->after_coarse_settle_gn) &&
+            obs->after_coarse_settle_gn >
+                obs->target_weight - desired_fine_window + 0.0205f) {
+            out->coarse_late_count++;
         }
     }
 
-    ai_tuning_clamp_steering_unlocked(model);
-    ai_tuning_update_finish_profile_unlocked(model,
-                                             ai_tuning_default_target_weight_for_profile_unlocked(profile_idx));
-    save_history_to_flash();
+    if (out->observation_count > 0u) {
+        out->over_rate = (float)over_count / (float)out->observation_count;
+        out->under_rate = (float)under_count / (float)out->observation_count;
+        out->recovery_use_rate = (float)out->recovery_count / (float)out->observation_count;
+        out->coarse_late_rate =
+            (float)out->coarse_late_count / (float)out->observation_count;
+    }
+    if (out->fast_finish_count > 0u) {
+        out->fast_finish_over_rate =
+            (float)fast_finish_over_count / (float)out->fast_finish_count;
+    }
+    if (out->recovery_phase_count > 0u) {
+        out->recovery_over_rate =
+            (float)recovery_over_count / (float)out->recovery_phase_count;
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        float max_tail = fmaxf(25.0f, obs->target_weight * 0.75f);
+        if (obs->profile_idx == profile_idx &&
+            isfinite(obs->observed_coarse_tail_gn) &&
+            obs->observed_coarse_tail_gn >= 0.0f &&
+            obs->observed_coarse_tail_gn <= max_tail) {
+            values[value_count++] = obs->observed_coarse_tail_gn;
+        }
+    }
+    out->coarse_tail_count = value_count;
+    ai_tuning_mean_and_sd(values, value_count,
+                          &out->coarse_tail_mean_gn,
+                          &out->coarse_tail_sd_gn);
+    if (value_count > 0u) {
+        out->coarse_tail_p95_gn = ai_tuning_percentile(values, value_count, 0.95f);
+        out->coarse_tail_max_gn = values[value_count - 1u];
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        float max_tail = fmaxf(0.75f, fminf(2.00f, obs->target_weight * 0.05f));
+        if (obs->profile_idx == profile_idx &&
+            isfinite(obs->observed_fine_tail_gn) &&
+            obs->observed_fine_tail_gn >= 0.0f &&
+            obs->observed_fine_tail_gn <= max_tail) {
+            values[value_count++] = obs->observed_fine_tail_gn;
+        }
+    }
+    out->fine_tail_count = value_count;
+    ai_tuning_mean_and_sd(values, value_count,
+                          &out->fine_tail_mean_gn,
+                          &out->fine_tail_sd_gn);
+    if (value_count > 0u) {
+        out->fine_tail_p90_gn = ai_tuning_percentile(values, value_count, 0.90f);
+        out->fine_tail_p95_gn = ai_tuning_percentile(values, value_count, 0.95f);
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        bool recovery_phase_started =
+            isfinite(obs->recovery_start_weight_gn) &&
+            isfinite(obs->target_weight) &&
+            obs->recovery_start_weight_gn > obs->target_weight * 0.55f &&
+            obs->recovery_start_weight_gn < obs->target_weight + 1.0f;
+        float max_tail = isfinite(obs->target_weight)
+            ? fmaxf(0.75f, fminf(2.00f, obs->target_weight * 0.05f))
+            : 0.75f;
+        if (obs->profile_idx != profile_idx ||
+            recovery_phase_started ||
+            !isfinite(obs->fine_stop_weight_gn) ||
+            !isfinite(obs->post_finish_peak_weight_gn) ||
+            !isfinite(obs->target_weight) ||
+            obs->target_weight <= 0.0f ||
+            obs->fine_stop_weight_gn <= obs->target_weight * 0.55f ||
+            obs->fine_stop_weight_gn >= obs->target_weight + 0.0205f) {
+            continue;
+        }
+
+        float complete_tail = obs->post_finish_peak_weight_gn - obs->fine_stop_weight_gn;
+        if (isfinite(obs->observed_fine_tail_gn)) {
+            complete_tail = fmaxf(complete_tail, obs->observed_fine_tail_gn);
+        }
+        if (complete_tail >= 0.0f && complete_tail <= max_tail) {
+            values[value_count++] = complete_tail;
+        }
+    }
+    out->fast_finish_tail_count = value_count;
+    if (value_count > 0u) {
+        out->fast_finish_tail_p90_gn = ai_tuning_percentile(values, value_count, 0.90f);
+        out->fast_finish_tail_p95_gn = ai_tuning_percentile(values, value_count, 0.95f);
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        if (obs->profile_idx != profile_idx ||
+            !isfinite(obs->after_fine_settle_gn) ||
+            !isfinite(obs->target_weight) ||
+            obs->target_weight <= 0.0f ||
+            obs->after_fine_settle_gn <= obs->target_weight * 0.55f) {
+            continue;
+        }
+        float landing_error = obs->after_fine_settle_gn - obs->target_weight;
+        if (fabsf(landing_error) <= fmaxf(2.0f, obs->target_weight * 0.08f)) {
+            values[value_count++] = landing_error;
+        }
+    }
+    out->fine_landing_count = value_count;
+    ai_tuning_mean_and_sd(values, value_count,
+                          &out->fine_landing_error_mean_gn,
+                          NULL);
+    if (value_count > 0u) {
+        out->fine_landing_error_p90_gn = ai_tuning_percentile(values, value_count, 0.90f);
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        if (obs->profile_idx == profile_idx &&
+            isfinite(obs->total_time_ms) &&
+            obs->total_time_ms > 0.0f) {
+            values[value_count++] = obs->total_time_ms;
+        }
+    }
+    if (value_count > 0u) {
+        out->median_total_time_ms = ai_tuning_percentile(values, value_count, 0.50f);
+    }
+
+    value_count = 0;
+    for (uint8_t idx = 0; idx < g_history.observation_count; idx++) {
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        if (obs->profile_idx == profile_idx &&
+            isfinite(obs->recovery_motor_on_ms) &&
+            obs->recovery_motor_on_ms > 50.0f) {
+            values[value_count++] = obs->recovery_motor_on_ms;
+        }
+    }
+    if (value_count > 0u) {
+        out->median_recovery_motor_ms = ai_tuning_percentile(values, value_count, 0.50f);
+    }
+
+    out->valid = out->observation_count >= 3u;
     ai_tuning_unlock();
-    return true;
+    return out->valid;
 }
 
 void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
@@ -876,6 +1070,12 @@ void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
             fine_stop_weight_gn < target_weight + 1.0f &&
             production_fine_tail >= 0.0f &&
             production_fine_tail <= fine_tail_cap;
+        const float pre_recovery_fine_error =
+            isfinite(after_fine_settle_gn) ? after_fine_settle_gn - target_weight : 0.0f;
+        const bool fast_fine_landed_under =
+            have_fine_feedback &&
+            isfinite(after_fine_settle_gn) &&
+            pre_recovery_fine_error < -acceptable_band;
         bool have_recovery_feedback =
             isfinite(recovery_start_weight_gn) &&
             isfinite(recovery_end_weight_gn) &&
@@ -1048,7 +1248,8 @@ void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
             }
 
             if (model->machine.valid) {
-                float min_bulk_margin = desired_fine_window + 2.25f;
+                float min_bulk_margin =
+                    desired_fine_window + fmaxf(0.75f, target_weight * 0.020f);
                 float max_bulk_margin = desired_fine_window + fmaxf(18.0f, target_weight * 0.55f);
                 float min_trim_margin = desired_fine_window + 0.70f;
                 float max_trim_margin = desired_fine_window + fmaxf(1.80f, target_weight * 0.055f);
@@ -1067,7 +1268,8 @@ void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
                     ai_tuning_machine_bulk_handoff_margin(model,
                                                           target_weight,
                                                           desired_fine_window);
-                if (measured_margin > 0.0f) {
+                if (measured_margin > 0.0f &&
+                    handoff_error > acceptable_band) {
                     model->machine.recommended_bulk_handoff_gn =
                         fmaxf(model->machine.recommended_bulk_handoff_gn,
                               measured_margin);
@@ -1104,10 +1306,12 @@ void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
                 model->fine_tail_gn =
                     model->fine_tail_gn * (1.0f - alpha) + observed_tail * alpha;
             }
-            else if (final_error_gn <= 0.0f &&
-                     total_time_ms > slow_time_ms &&
-                     observed_tail + 0.10f < model->fine_tail_gn) {
-                model->fine_tail_gn = model->fine_tail_gn * 0.96f + observed_tail * 0.04f;
+            else if ((fast_fine_landed_under ||
+                      (final_error_gn <= 0.0f && total_time_ms > slow_time_ms)) &&
+                     observed_tail + 0.05f < model->fine_tail_gn) {
+                float lower_alpha = fast_fine_landed_under ? 0.14f : 0.06f;
+                model->fine_tail_gn =
+                    model->fine_tail_gn * (1.0f - lower_alpha) + observed_tail * lower_alpha;
             }
 
             if (final_error_gn > acceptable_band && !recovery_phase_blame) {
@@ -1119,8 +1323,16 @@ void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,
                 model->fine_stop_safety_bias_gn += fmaxf(0.003f, overcharge * 0.025f);
             }
             else if (observed_tail + 0.03f < model->fine_fast_tail_gn) {
+                float lower_alpha = fast_fine_landed_under ? 0.18f : 0.06f;
                 model->fine_fast_tail_gn =
-                    model->fine_fast_tail_gn * 0.94f + observed_tail * 0.06f;
+                    model->fine_fast_tail_gn * (1.0f - lower_alpha) +
+                    observed_tail * lower_alpha;
+            }
+
+            if (fast_fine_landed_under) {
+                float under_gap = fminf(-pre_recovery_fine_error, 0.60f);
+                model->fine_stop_safety_bias_gn -=
+                    fminf(0.025f, fmaxf(0.004f, under_gap * 0.08f));
             }
 
             model->fine_tail_gn = ai_clampf(model->fine_tail_gn, 0.0f, fine_tail_cap);
@@ -1756,6 +1968,7 @@ static void ai_tuning_choose_best_stage_sample(const ai_flow_sample_t* samples, 
 }
 
 static void ai_tuning_choose_bulk_stage_sample(const ai_flow_sample_t* samples, uint8_t count,
+                                               float target_weight,
                                                float* best_speed_rps,
                                                float* best_flow_gps) {
     if (best_speed_rps == NULL || best_flow_gps == NULL) {
@@ -1765,8 +1978,12 @@ static void ai_tuning_choose_bulk_stage_sample(const ai_flow_sample_t* samples, 
     *best_speed_rps = 0.0f;
     *best_flow_gps = 0.0f;
 
+    const float effective_target = fmaxf(target_weight, 1.0f);
+    const float desired_fine_window =
+        fmaxf(0.85f, fminf(1.10f, effective_target * 0.025f));
+    const float safe_tail_cap = fmaxf(4.0f, effective_target * 0.25f);
     bool found = false;
-    float best_score = -1000000.0f;
+    float best_score = 1000000.0f;
     for (uint8_t idx = 0; idx < count; idx++) {
         const ai_flow_sample_t* sample = &samples[idx];
         if (sample->delivered_weight < fmaxf(2.0f, g_config.noise_margin * 10.0f) ||
@@ -1776,13 +1993,18 @@ static void ai_tuning_choose_bulk_stage_sample(const ai_flow_sample_t* samples, 
         }
 
         float tail = fmaxf(sample->tail_weight, 0.0f);
-        if (tail > 4.0f ||
-            tail > sample->delivered_weight * 0.55f) {
+        if (tail > safe_tail_cap ||
+            tail > sample->delivered_weight * 0.62f) {
             continue;
         }
 
-        float score = sample->flow_gps / (1.0f + tail * 0.35f);
-        if (!found || score > best_score) {
+        float expected_bulk_seconds =
+            fmaxf(effective_target - tail - desired_fine_window, 0.0f) /
+            fmaxf(sample->flow_gps, 0.001f);
+        float tail_ratio = tail / effective_target;
+        float risk_cost = g_config.error_cost_weight * tail_ratio * tail_ratio;
+        float score = g_config.time_cost_weight * expected_bulk_seconds + risk_cost;
+        if (!found || score < best_score) {
             found = true;
             best_score = score;
             *best_speed_rps = sample->speed_rps;
@@ -1790,27 +2012,6 @@ static void ai_tuning_choose_bulk_stage_sample(const ai_flow_sample_t* samples, 
         }
     }
 
-    if (!found) {
-        float safest_score = 1000000.0f;
-        for (uint8_t idx = 0; idx < count; idx++) {
-            const ai_flow_sample_t* sample = &samples[idx];
-            if (sample->delivered_weight < fmaxf(2.0f, g_config.noise_margin * 10.0f) ||
-                sample->flow_gps <= 0.001f ||
-                sample->speed_rps <= 0.0f) {
-                continue;
-            }
-
-            float tail = fmaxf(sample->tail_weight, 0.0f);
-            float flow = fmaxf(sample->flow_gps, 0.001f);
-            float score = tail * 10.0f + (1.0f / flow);
-            if (score < safest_score) {
-                found = true;
-                safest_score = score;
-                *best_speed_rps = sample->speed_rps;
-                *best_flow_gps = sample->flow_gps;
-            }
-        }
-    }
 }
 
 static void ai_tuning_choose_trim_stage_sample(const ai_flow_sample_t* samples, uint8_t count,
@@ -2073,12 +2274,9 @@ static void ai_tuning_sanitize_machine_calibration(ai_profile_model_t* model, fl
 
     float coarse_timing_guard =
         ai_tuning_machine_coarse_tail_guard(cal, target_weight) +
-        fminf(fmaxf(2.25f, target_weight * 0.070f),
-              cal->coarse_uncertainty_gn * 0.70f) +
-        fminf(fmaxf(0.85f, target_weight * 0.040f),
-              cal->coarse_open_loop_flow_gps *
-                  ((cal->scale_sample_period_ms + cal->coarse_first_response_ms) / 1000.0f) *
-                  0.85f);
+        ai_clampf(cal->coarse_uncertainty_gn * 0.55f,
+                  0.10f,
+                  fmaxf(0.65f, target_weight * 0.018f));
     float fine_timing_guard =
         cal->fine_tail_p95_gn * 0.55f +
         cal->fine_uncertainty_gn * 0.80f +
@@ -2086,7 +2284,7 @@ static void ai_tuning_sanitize_machine_calibration(ai_profile_model_t* model, fl
 
     float default_bulk_margin =
         ai_clampf(desired_fine_window + coarse_timing_guard,
-                  desired_fine_window + 2.25f,
+                  desired_fine_window + fmaxf(0.75f, target_weight * 0.020f),
                   desired_fine_window + fmaxf(18.0f, target_weight * 0.55f));
     float default_trim_margin =
         desired_fine_window + ai_clampf(fine_timing_guard,
@@ -2097,23 +2295,25 @@ static void ai_tuning_sanitize_machine_calibration(ai_profile_model_t* model, fl
         cal->recommended_bulk_handoff_gn <= 0.0f) {
         cal->recommended_bulk_handoff_gn = default_bulk_margin;
     }
-    else {
+    else if (g_session.state == AI_TUNING_CALIBRATING_COARSE ||
+             g_session.state == AI_TUNING_CALIBRATING_FINE) {
         cal->recommended_bulk_handoff_gn =
-            fmaxf(cal->recommended_bulk_handoff_gn, default_bulk_margin);
+            cal->recommended_bulk_handoff_gn * 0.45f + default_bulk_margin * 0.55f;
     }
 
     if (!isfinite(cal->recommended_trim_stop_gn) ||
         cal->recommended_trim_stop_gn <= 0.0f) {
         cal->recommended_trim_stop_gn = default_trim_margin;
     }
-    else {
+    else if (g_session.state == AI_TUNING_CALIBRATING_COARSE ||
+             g_session.state == AI_TUNING_CALIBRATING_FINE) {
         cal->recommended_trim_stop_gn =
-            cal->recommended_trim_stop_gn * 0.70f + default_trim_margin * 0.30f;
+            cal->recommended_trim_stop_gn * 0.45f + default_trim_margin * 0.55f;
     }
 
     cal->recommended_bulk_handoff_gn =
         ai_clampf(cal->recommended_bulk_handoff_gn,
-                  desired_fine_window + 2.25f,
+                  desired_fine_window + fmaxf(0.75f, target_weight * 0.020f),
                   desired_fine_window + fmaxf(18.0f, target_weight * 0.55f));
     cal->recommended_trim_stop_gn =
         ai_clampf(cal->recommended_trim_stop_gn,
@@ -2125,34 +2325,14 @@ static void ai_tuning_sanitize_machine_calibration(ai_profile_model_t* model, fl
                   4500.0f);
 }
 
-static void ai_tuning_clamp_steering_unlocked(ai_profile_model_t* model) {
+static void ai_tuning_clear_legacy_controller_fields_unlocked(ai_profile_model_t* model) {
     if (model == NULL) {
         return;
     }
 
-    model->steering_bulk_bias_gn = ai_clampf(isfinite(model->steering_bulk_bias_gn)
-                                                 ? model->steering_bulk_bias_gn : 0.0f,
-                                             -0.75f,
-                                             1.50f);
-    model->steering_fine_bias_gn = ai_clampf(isfinite(model->steering_fine_bias_gn)
-                                                 ? model->steering_fine_bias_gn : 0.0f,
-                                             -0.08f,
-                                             0.25f);
-    model->steering_recovery_speed_scale =
-        ai_clampf(isfinite(model->steering_recovery_speed_scale)
-                      ? model->steering_recovery_speed_scale : 0.0f,
-                  -0.35f,
-                  0.60f);
-    if (!isfinite(model->steering_last_bulk_bias_gn)) {
-        model->steering_last_bulk_bias_gn = model->steering_bulk_bias_gn;
-    }
-    if (!isfinite(model->steering_last_fine_bias_gn)) {
-        model->steering_last_fine_bias_gn = model->steering_fine_bias_gn;
-    }
-    if (!isfinite(model->steering_last_recovery_speed_scale)) {
-        model->steering_last_recovery_speed_scale = model->steering_recovery_speed_scale;
-    }
-    model->steering_undo_available = model->steering_undo_available ? 1 : 0;
+    memset(model->reserved_controller_v1, 0, sizeof(model->reserved_controller_v1));
+    model->reserved_controller_flags = 0;
+    model->reserved_controller_counter = 0;
 }
 
 static void ai_tuning_update_finish_profile_unlocked(ai_profile_model_t* model, float target_weight) {
@@ -2279,7 +2459,7 @@ static void ai_tuning_update_finish_profile_unlocked(ai_profile_model_t* model, 
     model->fine_stop_safety_bias_gn =
         ai_clampf(model->fine_stop_safety_bias_gn, 0.004f, 0.110f);
 
-    ai_tuning_clamp_steering_unlocked(model);
+    ai_tuning_clear_legacy_controller_fields_unlocked(model);
 }
 
 static void ai_tuning_update_machine_calibration_unlocked(const ai_drop_telemetry_t* telemetry) {
@@ -2289,8 +2469,10 @@ static void ai_tuning_update_machine_calibration_unlocked(const ai_drop_telemetr
 
     ai_machine_calibration_t* cal = &g_session.working_model.machine;
     const bool coarse = telemetry->motor_mode == AI_MOTOR_MODE_COARSE_ONLY;
-    uint8_t count = coarse ? (uint8_t)(cal->coarse_sample_count + 1u)
-                           : (uint8_t)(cal->fine_sample_count + 1u);
+    const bool low_speed_sample = g_session.stage_sample_index >= 4u;
+    const uint8_t low_speed_count = low_speed_sample
+        ? (uint8_t)(g_session.stage_sample_index - 3u)
+        : 0u;
     float delivered = fmaxf(0.0f, telemetry->final_weight - telemetry->start_weight);
     bool stop_snapshot_valid = ai_tuning_has_valid_stop_snapshot(telemetry);
     float tail = stop_snapshot_valid
@@ -2303,75 +2485,77 @@ static void ai_tuning_update_machine_calibration_unlocked(const ai_drop_telemetr
     if (isfinite(telemetry->scale_sample_period_ms) &&
         telemetry->scale_sample_period_ms > 20.0f &&
         telemetry->scale_sample_period_ms < 1500.0f) {
-        uint8_t total_count = (uint8_t)(cal->coarse_sample_count + cal->fine_sample_count + 1u);
+        uint8_t total_count = g_session.drops_completed > 0u ? g_session.drops_completed : 1u;
         ai_tuning_cal_update_mean(&cal->scale_sample_period_ms,
                                   total_count,
                                   telemetry->scale_sample_period_ms);
     }
 
     if (coarse) {
-        cal->coarse_sample_count = count;
-        ai_tuning_cal_update_mean(&cal->coarse_first_response_ms,
-                                  count,
-                                  telemetry->first_response_time_ms);
-        ai_tuning_cal_update_mean(&cal->coarse_settle_ms,
-                                  count,
-                                  telemetry->settle_time_ms);
-        if (stop_snapshot_valid) {
-            ai_tuning_cal_update_mean(&cal->coarse_tail_avg_gn, count, tail);
-            ai_tuning_cal_update_max(&cal->coarse_tail_p95_gn, tail);
-        }
-
-        bool looks_like_trim =
-            g_session.working_model.coarse_trim_speed_rps > 0.0f &&
-            telemetry->speed_rps <= g_session.working_model.coarse_trim_speed_rps + 0.05f;
-        if (flow > 0.05f && flow < 220.0f) {
-            if (looks_like_trim) {
-                ai_tuning_cal_update_mean(&cal->trim_open_loop_flow_gps, count, flow);
-            }
-            else {
-                ai_tuning_cal_update_mean(&cal->coarse_open_loop_flow_gps, count, flow);
+        if (low_speed_sample) {
+            if (flow > 0.05f && flow < 220.0f) {
+                ai_tuning_cal_update_mean(&cal->trim_open_loop_flow_gps,
+                                          low_speed_count,
+                                          flow);
             }
         }
-        if (stop_snapshot_valid) {
-            cal->coarse_uncertainty_gn =
-                fmaxf(cal->coarse_uncertainty_gn * 0.80f,
-                      fabsf(tail - cal->coarse_tail_avg_gn));
+        else {
+            uint8_t count = (uint8_t)(cal->coarse_sample_count + 1u);
+            cal->coarse_sample_count = count;
+            ai_tuning_cal_update_mean(&cal->coarse_first_response_ms,
+                                      count,
+                                      telemetry->first_response_time_ms);
+            ai_tuning_cal_update_mean(&cal->coarse_settle_ms,
+                                      count,
+                                      telemetry->settle_time_ms);
+            if (stop_snapshot_valid) {
+                ai_tuning_cal_update_mean(&cal->coarse_tail_avg_gn, count, tail);
+                ai_tuning_cal_update_max(&cal->coarse_tail_p95_gn, tail);
+                cal->coarse_uncertainty_gn =
+                    fmaxf(cal->coarse_uncertainty_gn * 0.80f,
+                          fabsf(tail - cal->coarse_tail_avg_gn));
+            }
+            if (flow > 0.05f && flow < 220.0f) {
+                ai_tuning_cal_update_mean(&cal->coarse_open_loop_flow_gps,
+                                          count,
+                                          flow);
+            }
         }
     }
     else {
-        cal->fine_sample_count = count;
-        ai_tuning_cal_update_mean(&cal->fine_first_response_ms,
-                                  count,
-                                  telemetry->first_response_time_ms);
-        ai_tuning_cal_update_mean(&cal->fine_settle_ms,
-                                  count,
-                                  telemetry->settle_time_ms);
-        if (stop_snapshot_valid) {
-            ai_tuning_cal_update_mean(&cal->fine_tail_avg_gn, count, tail);
-            ai_tuning_cal_update_max(&cal->fine_tail_p95_gn, tail);
-        }
-
-        bool looks_like_micro =
-            g_session.working_model.fine_recovery_speed_rps > 0.0f &&
-            telemetry->speed_rps <= g_session.working_model.fine_recovery_speed_rps + 0.04f;
-        if (flow > 0.001f && flow < 8.0f) {
-            if (looks_like_micro) {
-                ai_tuning_cal_update_mean(&cal->micro_open_loop_flow_gps, count, flow);
-            }
-            else {
-                ai_tuning_cal_update_mean(&cal->fine_open_loop_flow_gps, count, flow);
+        if (low_speed_sample) {
+            if (flow > 0.001f && flow < 8.0f) {
+                ai_tuning_cal_update_mean(&cal->micro_open_loop_flow_gps,
+                                          low_speed_count,
+                                          flow);
             }
         }
-        if (stop_snapshot_valid) {
-            cal->fine_uncertainty_gn =
-                fmaxf(cal->fine_uncertainty_gn * 0.80f,
-                      fabsf(tail - cal->fine_tail_avg_gn));
+        else {
+            uint8_t count = (uint8_t)(cal->fine_sample_count + 1u);
+            cal->fine_sample_count = count;
+            ai_tuning_cal_update_mean(&cal->fine_first_response_ms,
+                                      count,
+                                      telemetry->first_response_time_ms);
+            ai_tuning_cal_update_mean(&cal->fine_settle_ms,
+                                      count,
+                                      telemetry->settle_time_ms);
+            if (stop_snapshot_valid) {
+                ai_tuning_cal_update_mean(&cal->fine_tail_avg_gn, count, tail);
+                ai_tuning_cal_update_max(&cal->fine_tail_p95_gn, tail);
+                cal->fine_uncertainty_gn =
+                    fmaxf(cal->fine_uncertainty_gn * 0.80f,
+                          fabsf(tail - cal->fine_tail_avg_gn));
+            }
+            if (flow > 0.001f && flow < 8.0f) {
+                ai_tuning_cal_update_mean(&cal->fine_open_loop_flow_gps,
+                                          count,
+                                          flow);
+            }
         }
     }
 
     ai_tuning_sanitize_machine_calibration(&g_session.working_model,
-                                           fmaxf(g_session.requested_target_weight, 40.0f));
+                                           fmaxf(g_session.requested_target_weight, 1.0f));
 }
 
 static void ai_tuning_filter_runtime_observations_unlocked(void) {
@@ -2404,6 +2588,29 @@ static void ai_tuning_filter_runtime_observations_unlocked(void) {
         if (filtered_count >= AI_RUNTIME_OBSERVATION_COUNT) {
             break;
         }
+    }
+
+    memset(g_history.observations, 0, sizeof(g_history.observations));
+    memcpy(g_history.observations, filtered, sizeof(filtered));
+    g_history.observation_count = filtered_count;
+    g_history.observation_next_idx = filtered_count % AI_RUNTIME_OBSERVATION_COUNT;
+}
+
+static void ai_tuning_clear_profile_observations_unlocked(uint8_t profile_idx) {
+    ai_runtime_observation_t filtered[AI_RUNTIME_OBSERVATION_COUNT];
+    memset(filtered, 0, sizeof(filtered));
+
+    uint8_t filtered_count = 0;
+    int oldest_idx = (g_history.observation_count >= AI_RUNTIME_OBSERVATION_COUNT)
+        ? g_history.observation_next_idx
+        : 0;
+    for (uint8_t offset = 0; offset < g_history.observation_count; offset++) {
+        int idx = (oldest_idx + offset) % AI_RUNTIME_OBSERVATION_COUNT;
+        const ai_runtime_observation_t* obs = &g_history.observations[idx];
+        if (obs->profile_idx == profile_idx) {
+            continue;
+        }
+        filtered[filtered_count++] = *obs;
     }
 
     memset(g_history.observations, 0, sizeof(g_history.observations));
@@ -2508,10 +2715,16 @@ static void ai_tuning_sanitize_model_unlocked(ai_profile_model_t* model,
         model->fine_tail_gn = 0.0f;
     }
 
-    ai_tuning_choose_bulk_stage_sample(model->coarse_samples,
-                                       model->coarse_sample_count,
-                                       &model->coarse_best_speed_rps,
-                                       &model->coarse_best_flow_gps);
+    if (!isfinite(model->coarse_best_speed_rps) ||
+        !isfinite(model->coarse_best_flow_gps) ||
+        model->coarse_best_speed_rps <= 0.0f ||
+        model->coarse_best_flow_gps <= 0.001f) {
+        ai_tuning_choose_bulk_stage_sample(model->coarse_samples,
+                                           model->coarse_sample_count,
+                                           target_weight,
+                                           &model->coarse_best_speed_rps,
+                                           &model->coarse_best_flow_gps);
+    }
     ai_tuning_choose_trim_stage_sample(model->coarse_samples,
                                        model->coarse_sample_count,
                                        &model->coarse_trim_speed_rps,
@@ -2523,11 +2736,16 @@ static void ai_tuning_sanitize_model_unlocked(ai_profile_model_t* model,
                                                model->coarse_trim_tail_gn * 0.50f,
                                                model->coarse_trim_tail_gn);
     }
-    ai_tuning_choose_best_stage_sample(model->fine_samples,
-                                       model->fine_sample_count,
-                                       fminf(g_config.error_cost_weight, 0.25f),
-                                       &model->fine_best_speed_rps,
-                                       &model->fine_best_flow_gps);
+    if (!isfinite(model->fine_best_speed_rps) ||
+        !isfinite(model->fine_best_flow_gps) ||
+        model->fine_best_speed_rps <= 0.0f ||
+        model->fine_best_flow_gps <= 0.001f) {
+        ai_tuning_choose_best_stage_sample(model->fine_samples,
+                                           model->fine_sample_count,
+                                           fminf(g_config.error_cost_weight, 0.25f),
+                                           &model->fine_best_speed_rps,
+                                           &model->fine_best_flow_gps);
+    }
     ai_tuning_choose_recovery_stage_sample(model->fine_recovery_samples,
                                            model->fine_recovery_sample_count,
                                            &model->fine_recovery_speed_rps,
@@ -2608,7 +2826,7 @@ static void ai_tuning_sanitize_model_unlocked(ai_profile_model_t* model,
 static void ai_tuning_finalize_working_model_unlocked(void) {
     g_session.working_model.runtime_bias_gn = 0.0f;
     ai_tuning_sanitize_model_unlocked(&g_session.working_model,
-                                      fmaxf(g_session.requested_target_weight, 40.0f),
+                                      fmaxf(g_session.requested_target_weight, 1.0f),
                                       false);
 }
 

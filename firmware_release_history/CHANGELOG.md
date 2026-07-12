@@ -1,5 +1,29 @@
 # Firmware Changelog
 
+## 2026.07.12-beta.10 - Automatic Finish Safety
+
+- Removed manual Faster, Safer, Fine Finish Faster, Bulk Closer, and Undo steering controls.
+- Removed the `/rest/ai_steering` API and the corresponding model fields while preserving the persistent-history layout.
+- Added phase-specific recent-history statistics for fast finishes, recovery finishes, coarse late landings, and complete fast-finish tail.
+- Made unstable or high-overthrow windows widen finish protection instead of disabling percentile guards.
+- Added a bounded motor-off tail-drain observation before recovery starts near target.
+- Reduced recovery pulse authority when recent recovery finishes show elevated overthrow risk.
+- Kept characterized motor speeds unchanged; beta 10 spends additional time only at risky handoffs and finish transitions.
+
+## 2026.07.10-beta.9 - Production-Tail Controller
+
+- Replaced the fixed coarse-tail rejection rule with a target-aware time-versus-risk selector for new characterizations.
+- Made characterization fail closed when no coarse candidate satisfies the new tail limits.
+- Preserved saved motor choices across firmware boots; the new selector takes effect only after a fresh characterization.
+- Separated production-speed and low-speed machine-calibration statistics.
+- Removed duplicate scale-latency allowances from stop-to-settle tail planning.
+- Added robust per-profile runtime statistics over the latest 24 observations.
+- Allowed stable production tails to tighten coarse and fine handoffs while retaining percentile-based safety floors.
+- Made negative runtime bias effective instead of silently discarding it.
+- Added direct learning from the pre-recovery fine landing and retained recovery as the underthrow backstop.
+- Exposed runtime tail, landing, timing, recovery, overthrow, and underthrow statistics through REST history.
+- Cleared only the affected profile's runtime window after applying a new characterization or calibration.
+
 ## 2026.06.16-beta.8 - Recovery Split And Safer Top-Up
 
 - Split final recovery into `fine_recover` and `micro_heal` zones.

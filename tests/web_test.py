@@ -120,7 +120,102 @@ def rest_servo_gate_config():
 
 @app.route('/rest/system_control')
 def rest_system_control():
-    return {"s0":"8381FFF","s1":"1.2.10-dirty","s2":"8f201d6","s3":"Debug","s4":False,"s5":False,"s6":False}
+    return {"s0":"8381FFF","s1":"2026.07.12-beta.10","s2":"test-build","s3":"Debug","s4":False,"s5":False,"s6":False}
+
+
+def saved_ai_model():
+    return {
+        "valid": True,
+        "enabled": True,
+        "coarse_sample_count": 12,
+        "fine_sample_count": 12,
+        "fine_recovery_sample_count": 4,
+        "coarse_best_speed_rps": 6.815,
+        "coarse_best_flow_gps": 5.323,
+        "coarse_tail_gn": 8.553,
+        "coarse_trim_speed_rps": 5.630,
+        "coarse_trim_flow_gps": 2.750,
+        "coarse_trim_tail_gn": 8.498,
+        "fine_best_speed_rps": 5.704,
+        "fine_best_flow_gps": 1.086,
+        "fine_tail_gn": 0.178,
+        "fine_recovery_speed_rps": 0.080,
+        "fine_recovery_flow_gps": 0.035,
+        "fine_recovery_tail_gn": 0.061,
+        "recommended_fine_window_gn": 0.960,
+        "runtime_bias_gn": 0.0,
+        "fine_fast_tail_gn": 0.341,
+        "fine_fast_tail_confidence": 0.831,
+        "fine_micro_tail_gn": 0.061,
+        "fine_micro_tail_confidence": 0.808,
+        "fine_tube_profile": "balanced",
+        "machine_calibration": {
+            "valid": True,
+            "coarse_sample_count": 8,
+            "fine_sample_count": 8,
+            "scale_sample_period_ms": 80,
+            "recommended_bulk_handoff_gn": 13.638,
+            "recommended_trim_stop_gn": 2.258,
+            "coarse_tail_p95_gn": 9.140,
+            "fine_tail_p95_gn": 0.060,
+        },
+    }
+
+
+@app.route('/rest/ai_tuning_status')
+def rest_ai_tuning_status():
+    return {
+        "state": "idle",
+        "is_active": False,
+        "is_complete": False,
+        "drops_completed": 0,
+        "drops_max": 0,
+        "progress_percent": 0,
+        "profile_idx": 1,
+        "requested_target_weight": 38.4,
+        "status_message": "Ready",
+        "error_message": "",
+        "saved_model": saved_ai_model(),
+        "working_model": {"valid": False, "enabled": False},
+    }
+
+
+@app.route('/rest/ai_tuning_history')
+def rest_ai_tuning_history():
+    return {
+        "profile_idx": 1,
+        "observation_count": 24,
+        "model": saved_ai_model(),
+        "coarse_samples": [],
+        "fine_samples": [],
+        "fine_recovery_samples": [],
+        "runtime_stats": {
+            "valid": True,
+            "observation_count": 24,
+            "fast_finish_count": 8,
+            "fast_finish_over_rate": 0.875,
+            "recovery_phase_count": 16,
+            "recovery_over_rate": 0.375,
+            "fast_finish_tail_p90_gn": 0.341,
+        },
+        "observations": [],
+        "summary": {"matching_observations": 24, "avg_error_gn": 0.0527, "avg_time_ms": 7734},
+    }
+
+
+@app.route('/rest/ai_tuning_config')
+def rest_ai_tuning_config():
+    return {
+        "coarse_budget_gn": 120,
+        "fine_budget_gn": 36,
+        "coarse_sample_count": 12,
+        "fine_sample_count": 12,
+        "coarse_sample_target_gn": 8.0,
+        "fine_sample_target_gn": 1.75,
+        "noise_margin": 0.05,
+        "time_cost_weight": 1.0,
+        "error_cost_weight": 8.0,
+    }
 
 
 @app.route("/")
@@ -137,4 +232,9 @@ def web_wizard():
     return page
 
 
-app.run(debug=True)
+app.run(
+    host="127.0.0.1",
+    port=int(os.environ.get("WEB_TEST_PORT", "5000")),
+    debug=False,
+    use_reloader=False,
+)

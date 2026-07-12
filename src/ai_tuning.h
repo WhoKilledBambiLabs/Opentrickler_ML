@@ -38,14 +38,6 @@ typedef enum {
     AI_FINE_TUBE_PROFILE_HIGH_TAIL
 } ai_fine_tube_profile_t;
 
-typedef enum {
-    AI_STEERING_FASTER = 0,
-    AI_STEERING_SAFER,
-    AI_STEERING_FINE_FINISH_FASTER,
-    AI_STEERING_BULK_CLOSER,
-    AI_STEERING_UNDO_LAST
-} ai_steering_action_t;
-
 typedef struct {
     uint8_t sample_number;
     ai_motor_mode_t motor_mode;
@@ -135,15 +127,12 @@ typedef struct {
     float fine_micro_tail_gn;
     float fine_micro_tail_confidence;
     float fine_stop_safety_bias_gn;
-    float steering_bulk_bias_gn;
-    float steering_fine_bias_gn;
-    float steering_recovery_speed_scale;
-    float steering_last_bulk_bias_gn;
-    float steering_last_fine_bias_gn;
-    float steering_last_recovery_speed_scale;
+    // Reserved to keep revision 14 flash records byte-compatible with beta9.
+    // Beta10 ignores and clears the former manual override values.
+    float reserved_controller_v1[6];
     uint8_t fine_tube_profile;
-    uint8_t steering_undo_available;
-    uint16_t steering_count;
+    uint8_t reserved_controller_flags;
+    uint16_t reserved_controller_counter;
     ai_machine_calibration_t machine;
 
     ai_flow_sample_t coarse_samples[AI_TUNING_STAGE_SAMPLE_COUNT];
@@ -169,6 +158,42 @@ typedef struct {
     uint8_t recovery_exit_reason;
     uint8_t profile_idx;
 } ai_runtime_observation_t;
+
+typedef struct {
+    bool valid;
+    uint8_t observation_count;
+    uint8_t coarse_tail_count;
+    uint8_t fine_tail_count;
+    uint8_t fine_landing_count;
+    uint8_t recovery_count;
+    uint8_t fast_finish_count;
+    uint8_t fast_finish_tail_count;
+    uint8_t recovery_phase_count;
+    uint8_t coarse_late_count;
+
+    float coarse_tail_mean_gn;
+    float coarse_tail_sd_gn;
+    float coarse_tail_p95_gn;
+    float coarse_tail_max_gn;
+
+    float fine_tail_mean_gn;
+    float fine_tail_sd_gn;
+    float fine_tail_p90_gn;
+    float fine_tail_p95_gn;
+    float fine_landing_error_mean_gn;
+    float fine_landing_error_p90_gn;
+    float fast_finish_tail_p90_gn;
+    float fast_finish_tail_p95_gn;
+
+    float median_total_time_ms;
+    float recovery_use_rate;
+    float median_recovery_motor_ms;
+    float over_rate;
+    float under_rate;
+    float fast_finish_over_rate;
+    float recovery_over_rate;
+    float coarse_late_rate;
+} ai_runtime_profile_stats_t;
 
 typedef struct {
     ai_tuning_state_t state;
@@ -265,8 +290,7 @@ uint8_t ai_tuning_get_progress_percent(void);
 bool ai_tuning_get_active_plan(ai_tuning_plan_t* out);
 bool ai_tuning_get_profile_model_copy(uint8_t profile_idx, ai_profile_model_t* out);
 bool ai_tuning_get_enabled_model_copy(uint8_t profile_idx, ai_profile_model_t* out);
-bool ai_tuning_apply_steering(uint8_t profile_idx, ai_steering_action_t action);
-const char* ai_tuning_steering_action_to_string(ai_steering_action_t action);
+bool ai_tuning_get_runtime_profile_stats(uint8_t profile_idx, ai_runtime_profile_stats_t* out);
 const char* ai_tuning_fine_tube_profile_to_string(ai_fine_tube_profile_t profile);
 
 void ai_tuning_record_charge(uint8_t profile_idx, float target_weight,

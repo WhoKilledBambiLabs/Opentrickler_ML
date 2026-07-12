@@ -33,10 +33,10 @@
     <section class="hero section-band">
       <div class="section-inner hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">Current public beta: 2026.06.16-beta.8</p>
+          <p class="eyebrow">Current public beta: 2026.07.12-beta.10</p>
           <h1>Adaptive OpenTrickler firmware for profile-aware powder flow learning.</h1>
           <p class="lede">
-            This branch adds flow characterization, machine calibration, runtime learning, steering controls,
+            This branch adds flow characterization, machine calibration, automatic runtime safety,
             REST status endpoints, and OTA staging to the OpenTrickler Pico 2 W / RP2350 controller.
           </p>
           <div class="hero-actions" aria-label="Page shortcuts">
@@ -93,13 +93,13 @@
           <p>
             This branch keeps the normal OpenTrickler charge flow, display workflow, scale support, and motor
             control foundation, then adds an adaptive model that can be characterized, calibrated, saved, and
-            gently steered per profile.
+            refined from production evidence per profile.
           </p>
         </div>
         <div class="feature-grid">
           <article class="feature-card">
             <h3>Profile AI model</h3>
-            <p>Each profile can store learned flow, tail, confidence, machine timing, steering, and recovery behavior.</p>
+            <p>Each profile can store learned flow, tail, confidence, machine timing, and recovery behavior.</p>
           </article>
           <article class="feature-card">
             <h3>Flow characterization</h3>
@@ -114,16 +114,16 @@
             <p>Normal throws refine the model using final error, phase timing, stop weights, recovery time, and stalls.</p>
           </article>
           <article class="feature-card">
-            <h3>User steering</h3>
-            <p>Faster, Safer, Fine Finish Faster, Bulk Closer, and Undo Last actions bias a saved model carefully.</p>
+            <h3>Automatic safety governor</h3>
+            <p>Recent phase results may widen guards immediately; only stable, accurate history may tighten them.</p>
           </article>
           <article class="feature-card">
             <h3>Two-stage recovery</h3>
-            <p>Beta 8 splits recovery into <code>fine_recover</code> and <code>micro_heal</code> so small underthrows continue healing.</p>
+            <p>Beta 10 adds a motor-off <code>tail_drain</code> before <code>fine_recover</code> and <code>micro_heal</code>.</p>
           </article>
           <article class="feature-card">
             <h3>REST and OTA</h3>
-            <p>Status, tuning, steering, charge state, system info, and OTA staging are available over Wi-Fi.</p>
+            <p>Status, tuning, runtime history, charge state, system info, and OTA staging are available over Wi-Fi.</p>
           </article>
           <article class="feature-card">
             <h3>Full tuning reference</h3>
@@ -426,20 +426,21 @@
       </div>
     </section>
 
-    <section id="steering" class="section-band alt">
+    <section id="runtime-learning" class="section-band alt">
       <div class="section-inner two-column">
         <div>
           <p class="eyebrow">Production refinement</p>
-          <h2>Steering And Runtime Learning</h2>
+          <h2>Automatic Runtime Learning</h2>
           <p>
-            Runtime learning happens during normal throws. Steering lets you add a small human preference on top
-            of the saved model, then observe whether the machine becomes faster or safer in real operation.
+            Runtime learning happens during normal throws. Beta 10 evaluates coarse handoff, complete fast-finish
+            tail, and recovery outcomes separately, then changes stop guards without changing the characterized
+            production motor speeds.
           </p>
           <ul class="check-list">
-            <li>Use one steering action at a time.</li>
-            <li>Run enough charges to see a pattern before steering again.</li>
-            <li>Prefer Safer if overthrows or unstable tails appear.</li>
-            <li>Use Undo Last when a steering step makes behavior worse.</li>
+            <li>Unstable or overthrow-prone history can only make a phase safer.</li>
+            <li>Stable, accurate history is required before a phase can tighten.</li>
+            <li>Near-target recovery waits for passive powder arrival before running the motor.</li>
+            <li>Risky recovery changes to bounded micro pulses.</li>
             <li>Re-characterize if the setup no longer behaves like the saved model.</li>
           </ul>
         </div>
@@ -447,16 +448,15 @@
           <table>
             <thead>
               <tr>
-                <th>Action</th>
-                <th>Use when</th>
+                <th>Recent evidence</th>
+                <th>Automatic response</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td>Faster</td><td>Charges are consistently safe but slower than needed.</td></tr>
-              <tr><td>Safer</td><td>Overthrows, heavy tails, or unstable finishing appear.</td></tr>
-              <tr><td>Fine Finish Faster</td><td>Bulk handoff is good, but fine finishing is too slow.</td></tr>
-              <tr><td>Bulk Closer</td><td>Coarse/bulk handoff is too conservative and leaves too much for fine.</td></tr>
-              <tr><td>Undo Last</td><td>The most recent steering step made behavior worse.</td></tr>
+              <tr><td>Stable and accurate</td><td>Percentile guards may tighten within fixed safety bounds.</td></tr>
+              <tr><td>Fast-finish overthrows</td><td>Use the complete-tail P90 floor and block tightening.</td></tr>
+              <tr><td>Recovery overthrows</td><td>Wait for tail drain, use base recovery speed, and pulse near target.</td></tr>
+              <tr><td>Late coarse landing</td><td>Suppress closer handoff bias while retaining the selected bulk speed.</td></tr>
             </tbody>
           </table>
         </div>
@@ -519,7 +519,6 @@
               <tr><td>/rest/ai_machine_calibration_start</td><td>Run machine timing calibration after a saved model exists.</td><td>profile_idx, target</td></tr>
               <tr><td>/rest/ai_tuning_status</td><td>Read active state, plan, last drop, working model, and saved model.</td><td>profile_idx</td></tr>
               <tr><td>/rest/ai_tuning_apply</td><td>Save the completed working model to the selected profile.</td><td>none</td></tr>
-              <tr><td>/rest/ai_steering</td><td>Bias a saved model toward a selected behavior.</td><td>profile_idx, action</td></tr>
               <tr><td>/rest/ai_tuning_history</td><td>Read saved model samples and runtime observations.</td><td>profile_idx</td></tr>
               <tr><td>/rest/ai_tuning_config</td><td>Read AI budgets, sample counts, target, noise, and cost weights.</td><td>none</td></tr>
               <tr><td>/rest/ai_tuning_config_set</td><td>Set AI budgets, sample counts, target sizes, noise margin, and cost weights.</td><td>coarse_budget_gn, fine_budget_gn, coarse_sample_count, fine_sample_count, coarse_sample_target_gn, fine_sample_target_gn, noise_margin, time_cost_weight, error_cost_weight</td></tr>
@@ -574,39 +573,39 @@ cmake -B build-pico2w-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=p
       <div class="section-inner">
         <div class="section-heading">
           <p class="eyebrow">Release status</p>
-          <h2>2026.06.16-beta.8</h2>
+          <h2>2026.07.12-beta.10</h2>
           <p>
-            Beta 8 focuses on recovery split behavior, safer coarse top-up, and cleaner separation between fast
-            fine tail and active recovery delivery.
+            Beta 10 keeps beta9's fast production speeds while removing manual model overrides and making recent
+            phase outcomes the sole authority for automatic stop and recovery guards.
           </p>
         </div>
         <div class="release-grid">
           <article>
             <h3>Changes</h3>
             <ul>
-              <li>Split final recovery into <code>fine_recover</code> and <code>micro_heal</code> zones.</li>
-              <li>Reduced coarse top-up pulse count, duration, and desired drop size.</li>
-              <li>Preserved fine tail telemetry instead of overwriting it with recovery delivery.</li>
-              <li>Widened final-weight plausibility limits so severe overcharges remain visible to learning.</li>
-              <li>Adjusted runtime learning so recovery underthrows increase recovery authority.</li>
+              <li>Removed manual Faster, Safer, Fine Finish Faster, Bulk Closer, and Undo controls.</li>
+              <li>Added complete fast-finish tail P90/P95 statistics and phase-specific overthrow rates.</li>
+              <li>Made unstable evidence safety-only: it may widen a guard but cannot tighten one.</li>
+              <li>Added a calibrated motor-off <code>tail_drain</code> before active recovery.</li>
+              <li>Added bounded pulse recovery when recent recovery outcomes are unsafe.</li>
             </ul>
           </article>
           <article>
             <h3>Expected behavior</h3>
             <ul>
-              <li>Small underthrows continue healing instead of asking for cup removal.</li>
-              <li>Recovery settles and re-checks rather than driving directly to exact target.</li>
-              <li>Coarse top-up improves speed with less risk of jumping past target.</li>
-              <li>Future learning distinguishes passive tail from intentional recovery feed.</li>
+              <li>Characterized coarse and fine speeds remain unchanged.</li>
+              <li>Risky fast finishes stop earlier using complete powder-arrival tails.</li>
+              <li>Passive tail is observed before recovery motor delivery begins.</li>
+              <li>Accurate stable windows can recover speed automatically.</li>
             </ul>
           </article>
           <article>
             <h3>Test status</h3>
             <ul>
               <li>Pico 2 W release build passes locally.</li>
-              <li>OTA verification was completed during beta testing.</li>
-              <li>Device-reported version matched <code>2026.06.16-beta.8</code> after reboot.</li>
-              <li>Additional powder verification remains tracked in the issue ledger.</li>
+              <li>The retained RL17 window activates all expected beta10 guards in DataLab replay.</li>
+              <li>Clean, unsafe, recovery-risk, and sparse synthetic windows pass.</li>
+              <li>Physical powder verification remains required after OTA deployment.</li>
             </ul>
           </article>
         </div>

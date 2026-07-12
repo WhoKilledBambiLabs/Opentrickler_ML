@@ -926,41 +926,23 @@
                             <div class="text-xs text-base-content/70">These are the machine-level facts the controller uses to avoid guessing: safe bulk reserve, trim reserve, scale timing, and measured post-stop tail.</div>
                             <div class="text-sm text-base-content/70">Saved model: <span id="aiSavedModelStatus" class="font-semibold">No saved model</span></div>
 
-                            <div class="divider">Steering <span class="badge badge-warning badge-sm">Beta</span></div>
-                            <div class="alert alert-warning text-xs">
-                                <span>Small manual nudges layered on top of the learned model. Use after a few throws when the behavior is obvious, then Undo Last Steer if it moves the wrong way.</span>
-                            </div>
-                            <div class="grid grid-cols-2 gap-2">
-                                <button class="btn btn-sm btn-primary" onclick="aiSteering('faster')">Faster</button>
-                                <button class="btn btn-sm btn-warning" onclick="aiSteering('safer')">Safer</button>
-                                <button class="btn btn-sm btn-info" onclick="aiSteering('fine_finish_faster')">Fine Finish Faster</button>
-                                <button class="btn btn-sm btn-accent" onclick="aiSteering('bulk_closer')">Bulk Closer</button>
-                            </div>
-                            <button id="aiSteeringUndoBtn" class="btn btn-sm btn-outline w-full" onclick="aiSteering('undo_last')">Undo Last Steer</button>
+                            <div class="divider">Adaptive Finish</div>
                             <div class="grid grid-cols-2 gap-2">
                                 <div class="stat bg-base-200 rounded-box p-2">
                                     <div class="stat-title text-xs">Fine Tube Profile</div>
-                                    <div id="aiSteeringTubeProfile" class="stat-value text-lg">-</div>
+                                    <div id="aiFinishTubeProfile" class="stat-value text-lg">-</div>
                                 </div>
                                 <div class="stat bg-base-200 rounded-box p-2">
                                     <div class="stat-title text-xs">Tail Confidence</div>
-                                    <div id="aiSteeringTailConfidence" class="stat-value text-lg">-</div>
+                                    <div id="aiFinishTailConfidence" class="stat-value text-lg">-</div>
                                 </div>
                                 <div class="stat bg-base-200 rounded-box p-2">
-                                    <div class="stat-title text-xs">Bulk Bias</div>
-                                    <div id="aiSteeringBulkBias" class="stat-value text-lg">-</div>
-                                </div>
-                                <div class="stat bg-base-200 rounded-box p-2">
-                                    <div class="stat-title text-xs">Fine Bias</div>
-                                    <div id="aiSteeringFineBias" class="stat-value text-lg">-</div>
+                                    <div class="stat-title text-xs">Fast Tail</div>
+                                    <div id="aiFinishFastTail" class="stat-value text-lg">-</div>
                                 </div>
                                 <div class="stat bg-base-200 rounded-box p-2">
                                     <div class="stat-title text-xs">Micro Tail</div>
-                                    <div id="aiSteeringMicroTail" class="stat-value text-lg">-</div>
-                                </div>
-                                <div class="stat bg-base-200 rounded-box p-2">
-                                    <div class="stat-title text-xs">Recovery Scale</div>
-                                    <div id="aiSteeringRecoveryScale" class="stat-value text-lg">-</div>
+                                    <div id="aiFinishMicroTail" class="stat-value text-lg">-</div>
                                 </div>
                             </div>
 
@@ -2903,14 +2885,10 @@
         _setText('aiModelBias', _fmtSignedGn(model.runtime_bias_gn));
         const fastConf = Number(model.fine_fast_tail_confidence || 0);
         const microConf = Number(model.fine_micro_tail_confidence || 0);
-        _setText('aiSteeringTubeProfile', model.fine_tube_profile || '-');
-        _setText('aiSteeringTailConfidence', `${Math.round(Math.max(fastConf, microConf) * 100)}%`);
-        _setText('aiSteeringBulkBias', _fmtSignedGn(model.steering_bulk_bias_gn));
-        _setText('aiSteeringFineBias', _fmtSignedGn(model.steering_fine_bias_gn));
-        _setText('aiSteeringMicroTail', _fmtGn(model.fine_micro_tail_gn));
-        _setText('aiSteeringRecoveryScale', model.steering_recovery_speed_scale !== undefined
-            ? `${(Number(model.steering_recovery_speed_scale) >= 0 ? '+' : '')}${(Number(model.steering_recovery_speed_scale) * 100).toFixed(0)}%`
-            : '-');
+        _setText('aiFinishTubeProfile', model.fine_tube_profile || '-');
+        _setText('aiFinishTailConfidence', `${Math.round(Math.max(fastConf, microConf) * 100)}%`);
+        _setText('aiFinishFastTail', _fmtGn(model.fine_fast_tail_gn));
+        _setText('aiFinishMicroTail', _fmtGn(model.fine_micro_tail_gn));
 
         const machine = model.machine_calibration || {};
         _setText('aiMachineCalStatus', machine.valid ? 'Ready' : 'Missing');
@@ -2926,13 +2904,11 @@
         const machineCalBtn = document.getElementById('aiMachineCalStartBtn');
         const cancelBtn = document.getElementById('aiTuningCancelBtn');
         const applyBtn = document.getElementById('aiTuningApplyBtn');
-        const undoSteerBtn = document.getElementById('aiSteeringUndoBtn');
         const profSel = document.getElementById('aiTuningProfileSelect');
         if (startBtn) startBtn.disabled = isActive;
         if (machineCalBtn) machineCalBtn.disabled = isActive || !(savedModel && savedModel.valid && savedModel.enabled);
         if (cancelBtn) cancelBtn.disabled = !isActive;
         if (applyBtn) applyBtn.disabled = !isComplete;
-        if (undoSteerBtn) undoSteerBtn.disabled = !(savedModel && savedModel.steering_undo_available);
         if (profSel) profSel.disabled = isActive;
     }
 
@@ -3041,21 +3017,6 @@
             .catch(() => {});
         })
         .catch(e => console.error('Error saving AI model:', e));
-    }
-
-    function aiSteering(action) {
-        const profileSel = document.getElementById('aiTuningProfileSelect');
-        const profileIdx = profileSel ? profileSel.value : (_profileCurrentIdx || 0);
-        fetch(`/rest/ai_steering?profile_idx=${encodeURIComponent(profileIdx)}&action=${encodeURIComponent(action)}`)
-        .then(r => r.json())
-        .then(data => {
-            if (data && data.success === false) {
-                alert(data.error || 'Steering failed');
-                return;
-            }
-            loadAiTuningPage();
-        })
-        .catch(e => console.error('Error applying AI steering:', e));
     }
 
     const _aiCfgDefaults = {

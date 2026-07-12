@@ -72,7 +72,7 @@
           </article>
           <article>
             <h3>6. Verify throws</h3>
-            <p>Run supervised production charges, verify every charge, and use steering only after a repeatable pattern appears.</p>
+            <p>Run supervised production charges and verify every charge while runtime evidence establishes its safety window.</p>
           </article>
         </div>
       </div>
@@ -364,8 +364,6 @@
               <tr><td><code>fine_micro_flow_gps</code>, <code>fine_micro_tail_gn</code>, <code>fine_micro_tail_confidence</code></td><td>Runtime view of very small recovery behavior and confidence.</td></tr>
               <tr><td><code>fine_stop_safety_bias_gn</code></td><td>Extra fine stop safety margin learned from confidence and tail behavior.</td></tr>
               <tr><td><code>fine_tube_profile_id</code>, <code>fine_tube_profile</code></td><td>Detected fine tube behavior: <code>unknown</code>, <code>low-flow/low-tail</code>, <code>balanced</code>, or <code>high-tail</code>.</td></tr>
-              <tr><td><code>steering_bulk_bias_gn</code>, <code>steering_fine_bias_gn</code>, <code>steering_recovery_speed_scale</code></td><td>User steering offsets applied on top of the learned model.</td></tr>
-              <tr><td><code>steering_undo_available</code>, <code>steering_count</code></td><td>Whether one steering step can be undone and how many steering steps have been applied.</td></tr>
             </tbody>
           </table>
         </div>
@@ -391,6 +389,10 @@
               <tr><td><code>observations[]</code></td><td>Runtime learning observations matching the requested profile.</td></tr>
               <tr><td><code>summary.matching_observations</code></td><td>Runtime observations matching the requested profile.</td></tr>
               <tr><td><code>summary.avg_error_gn</code>, <code>summary.avg_time_ms</code></td><td>Average final error and average charge time for matching observations.</td></tr>
+              <tr><td><code>runtime_stats.fast_finish_count</code>, <code>runtime_stats.fast_finish_over_rate</code></td><td>Throws that completed without recovery and their final overthrow rate.</td></tr>
+              <tr><td><code>runtime_stats.fast_finish_tail_p90_gn</code>, <code>runtime_stats.fast_finish_tail_p95_gn</code></td><td>Complete powder arrival from first fine stop through the post-finish peak.</td></tr>
+              <tr><td><code>runtime_stats.recovery_phase_count</code>, <code>runtime_stats.recovery_over_rate</code></td><td>Throws that entered recovery and their final overthrow rate.</td></tr>
+              <tr><td><code>runtime_stats.coarse_late_count</code>, <code>runtime_stats.coarse_late_rate</code></td><td>Coarse landings that consumed the desired fine reserve.</td></tr>
             </tbody>
           </table>
         </div>
@@ -551,7 +553,6 @@
               <tr><td><code>/rest/ai_tuning_status</code></td><td><code>profile_idx</code> optional.</td><td>Session state, progress, current plan, last drop, working model, and saved model.</td></tr>
               <tr><td><code>/rest/ai_tuning_apply</code></td><td>None.</td><td>Saves the completed working model to the selected profile.</td></tr>
               <tr><td><code>/rest/ai_tuning_cancel</code></td><td>None.</td><td>Cancels the active characterization or calibration session.</td></tr>
-              <tr><td><code>/rest/ai_steering</code></td><td><code>profile_idx</code> optional, defaults to active profile. <code>action</code> required: <code>faster</code>, <code>safer</code>, <code>fine_finish_faster</code>, <code>bulk_closer</code>, or <code>undo_last</code>.</td><td>Updated saved model with steering fields.</td></tr>
               <tr><td><code>/rest/ai_tuning_history</code></td><td><code>profile_idx</code> optional, defaults to active profile.</td><td>Saved model, sample arrays, matching runtime observations, and summary averages.</td></tr>
               <tr><td><code>/rest/ai_tuning_config</code></td><td>None.</td><td>Current AI config values.</td></tr>
               <tr><td><code>/rest/ai_tuning_config_set</code></td><td>Any subset of the config fields listed above.</td><td>Saves clamped AI config values to EEPROM.</td></tr>

@@ -99,33 +99,6 @@ static const char* ai_motor_mode_to_string(ai_motor_mode_t mode) {
     }
 }
 
-static bool parse_steering_action(const char* value, ai_steering_action_t* action_out) {
-    if (value == NULL || action_out == NULL) {
-        return false;
-    }
-    if (strcmp(value, "faster") == 0) {
-        *action_out = AI_STEERING_FASTER;
-        return true;
-    }
-    if (strcmp(value, "safer") == 0) {
-        *action_out = AI_STEERING_SAFER;
-        return true;
-    }
-    if (strcmp(value, "fine_finish_faster") == 0) {
-        *action_out = AI_STEERING_FINE_FINISH_FASTER;
-        return true;
-    }
-    if (strcmp(value, "bulk_closer") == 0) {
-        *action_out = AI_STEERING_BULK_CLOSER;
-        return true;
-    }
-    if (strcmp(value, "undo_last") == 0) {
-        *action_out = AI_STEERING_UNDO_LAST;
-        return true;
-    }
-    return false;
-}
-
 static const char* flow_sample_safety_class(const ai_flow_sample_t* sample, bool coarse) {
     if (sample == NULL ||
         sample->speed_rps <= 0.0f ||
@@ -191,11 +164,6 @@ static bool append_model_json(int *len, const char *key, const ai_profile_model_
                       "\"fine_stop_safety_bias_gn\":%.4f,"
                       "\"fine_tube_profile_id\":%u,"
                       "\"fine_tube_profile\":\"%s\","
-                      "\"steering_bulk_bias_gn\":%.4f,"
-                      "\"steering_fine_bias_gn\":%.4f,"
-                      "\"steering_recovery_speed_scale\":%.4f,"
-                      "\"steering_undo_available\":%s,"
-                      "\"steering_count\":%u,"
                       "\"machine_calibration\":{"
                       "\"valid\":%s,"
                       "\"coarse_sample_count\":%u,"
@@ -253,11 +221,6 @@ static bool append_model_json(int *len, const char *key, const ai_profile_model_
                       model->fine_stop_safety_bias_gn,
                       model->fine_tube_profile,
                       ai_tuning_fine_tube_profile_to_string((ai_fine_tube_profile_t)model->fine_tube_profile),
-                      model->steering_bulk_bias_gn,
-                      model->steering_fine_bias_gn,
-                      model->steering_recovery_speed_scale,
-                      model->steering_undo_available ? "true" : "false",
-                      model->steering_count,
                       model->machine.valid ? "true" : "false",
                       model->machine.coarse_sample_count,
                       model->machine.fine_sample_count,
@@ -581,62 +544,6 @@ bool http_rest_ai_tuning_apply(struct fs_file *file, int num_params,
     return finalize_json_response(file, len);
 }
 
-bool http_rest_ai_steering(struct fs_file *file, int num_params,
-                           char *params[], char *values[]) {
-    int profile_idx = (int)profile_get_selected_idx();
-    ai_steering_action_t action = AI_STEERING_FASTER;
-    bool have_action = false;
-
-    for (int idx = 0; idx < num_params; idx++) {
-        if (strcmp(params[idx], "profile_idx") == 0) {
-            profile_idx = atoi(values[idx]);
-        }
-        else if (strcmp(params[idx], "action") == 0) {
-            have_action = parse_steering_action(values[idx], &action);
-        }
-    }
-
-    if (profile_idx < 0 || profile_idx >= MAX_PROFILE_CNT) {
-        int len = snprintf(ai_tuning_json_buffer, sizeof(ai_tuning_json_buffer),
-            "%s{\"success\":false,\"error\":\"Invalid profile_idx\"}",
-            http_json_header);
-        return finalize_json_response(file, len);
-    }
-    if (!have_action) {
-        int len = snprintf(ai_tuning_json_buffer, sizeof(ai_tuning_json_buffer),
-            "%s{\"success\":false,\"error\":\"Invalid steering action\"}",
-            http_json_header);
-        return finalize_json_response(file, len);
-    }
-
-    if (!ai_tuning_apply_steering((uint8_t)profile_idx, action)) {
-        int len = snprintf(ai_tuning_json_buffer, sizeof(ai_tuning_json_buffer),
-            "%s{\"success\":false,\"error\":\"No active saved AI model to steer, or undo is unavailable\"}",
-            http_json_header);
-        return finalize_json_response(file, len);
-    }
-
-    ai_profile_model_t model = {0};
-    bool have_model = ai_tuning_get_enabled_model_copy((uint8_t)profile_idx, &model);
-    int len = snprintf(ai_tuning_json_buffer, sizeof(ai_tuning_json_buffer),
-        "%s{\"success\":true,\"action\":\"%s\",\"profile_idx\":%d",
-        http_json_header,
-        ai_tuning_steering_action_to_string(action),
-        profile_idx);
-    if (len < 0 || len >= (int)sizeof(ai_tuning_json_buffer)) {
-        return send_buffer_overflow_error(file);
-    }
-    if (have_model) {
-        if (!append_model_json(&len, "model", &model)) {
-            return send_buffer_overflow_error(file);
-        }
-    }
-    if (!append_jsonf(&len, "}")) {
-        return send_buffer_overflow_error(file);
-    }
-    return finalize_json_response(file, len);
-}
-
 bool http_rest_ai_tuning_cancel(struct fs_file *file, int num_params,
                                 char *params[], char *values[]) {
     (void)num_params;
@@ -703,6 +610,62 @@ bool http_rest_ai_tuning_history(struct fs_file *file, int num_params,
                              "fine_recovery_samples",
                              model->fine_recovery_samples,
                              model->fine_recovery_sample_count)) {
+        return send_buffer_overflow_error(file);
+    }
+
+    ai_runtime_profile_stats_t runtime_stats;
+    memset(&runtime_stats, 0, sizeof(runtime_stats));
+    bool runtime_stats_valid =
+        ai_tuning_get_runtime_profile_stats((uint8_t)requested_profile_idx,
+                                            &runtime_stats);
+    if (!append_jsonf(&len,
+                      ",\"runtime_stats\":{"
+                      "\"valid\":%s,\"observation_count\":%u,"
+                      "\"coarse_tail_count\":%u,\"coarse_tail_mean_gn\":%.4f,"
+                      "\"coarse_tail_sd_gn\":%.4f,\"coarse_tail_p95_gn\":%.4f,"
+                      "\"coarse_tail_max_gn\":%.4f,\"fine_tail_count\":%u,"
+                      "\"fine_tail_mean_gn\":%.4f,\"fine_tail_sd_gn\":%.4f,"
+                      "\"fine_tail_p90_gn\":%.4f,\"fine_tail_p95_gn\":%.4f,"
+                      "\"fine_landing_count\":%u,\"fine_landing_error_mean_gn\":%.4f,"
+                      "\"fine_landing_error_p90_gn\":%.4f,"
+                      "\"fast_finish_count\":%u,\"fast_finish_tail_count\":%u,"
+                      "\"fast_finish_tail_p90_gn\":%.4f,\"fast_finish_tail_p95_gn\":%.4f,"
+                      "\"fast_finish_over_rate\":%.4f,\"recovery_phase_count\":%u,"
+                      "\"recovery_over_rate\":%.4f,\"coarse_late_count\":%u,"
+                      "\"coarse_late_rate\":%.4f,\"recovery_count\":%u,"
+                      "\"recovery_use_rate\":%.4f,\"median_recovery_motor_ms\":%.1f,"
+                      "\"median_total_time_ms\":%.1f,\"over_rate\":%.4f,"
+                      "\"under_rate\":%.4f}",
+                      runtime_stats_valid ? "true" : "false",
+                      runtime_stats.observation_count,
+                      runtime_stats.coarse_tail_count,
+                      runtime_stats.coarse_tail_mean_gn,
+                      runtime_stats.coarse_tail_sd_gn,
+                      runtime_stats.coarse_tail_p95_gn,
+                      runtime_stats.coarse_tail_max_gn,
+                      runtime_stats.fine_tail_count,
+                      runtime_stats.fine_tail_mean_gn,
+                      runtime_stats.fine_tail_sd_gn,
+                      runtime_stats.fine_tail_p90_gn,
+                      runtime_stats.fine_tail_p95_gn,
+                      runtime_stats.fine_landing_count,
+                      runtime_stats.fine_landing_error_mean_gn,
+                      runtime_stats.fine_landing_error_p90_gn,
+                      runtime_stats.fast_finish_count,
+                      runtime_stats.fast_finish_tail_count,
+                      runtime_stats.fast_finish_tail_p90_gn,
+                      runtime_stats.fast_finish_tail_p95_gn,
+                      runtime_stats.fast_finish_over_rate,
+                      runtime_stats.recovery_phase_count,
+                      runtime_stats.recovery_over_rate,
+                      runtime_stats.coarse_late_count,
+                      runtime_stats.coarse_late_rate,
+                      runtime_stats.recovery_count,
+                      runtime_stats.recovery_use_rate,
+                      runtime_stats.median_recovery_motor_ms,
+                      runtime_stats.median_total_time_ms,
+                      runtime_stats.over_rate,
+                      runtime_stats.under_rate)) {
         return send_buffer_overflow_error(file);
     }
 
@@ -902,7 +865,6 @@ bool rest_ai_tuning_init(void) {
     rest_register_handler("/rest/ai_machine_calibration_start", http_rest_ai_machine_calibration_start);
     rest_register_handler("/rest/ai_tuning_status", http_rest_ai_tuning_status);
     rest_register_handler("/rest/ai_tuning_apply", http_rest_ai_tuning_apply);
-    rest_register_handler("/rest/ai_steering", http_rest_ai_steering);
     rest_register_handler("/rest/ai_tuning_cancel", http_rest_ai_tuning_cancel);
     rest_register_handler("/rest/ai_tuning_history", http_rest_ai_tuning_history);
     rest_register_handler("/rest/ai_tuning_apply_refined", http_rest_ai_tuning_apply_refined);
