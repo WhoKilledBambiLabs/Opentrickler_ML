@@ -74,7 +74,10 @@ These values are derived from historical observations. They are not a physical s
 - DataLab phase-guard self-test passes all scenarios.
 - Persistent AI history revision remains unchanged.
 - Original collector data remains untouched.
-- OTA and device identity verification are pending for this release candidate.
+- OTA staging, CRC verification, apply, reboot, and device identity verification succeeded on a Pico 2 W.
+- The device reported `2026.07.12-beta.10`, source identity `1d7eec4`, and `Release` after reboot.
+- The existing RL17 characterization, machine calibration, and 24 runtime observations remained available after the update.
+- Collector `2.1.0-beta10`, schema `3`, passed its six-test suite and connected to the updated device.
 
 ## Powder-Test Protocol
 
