@@ -2009,9 +2009,6 @@ void charge_mode_wait_for_complete() {
                          planning_bulk_tail,
                          trim_tail_guard);
             }
-            const bool controllable_bulk =
-                (bulk_tail <= production_safe_coarse_tail + (derived_trim_coarse ? 0.85f : 0.0f)) &&
-                (!have_trim_coarse || bulk_speed <= trim_speed * 4.25f);
             bool bulk_running = target_weight > bulk_handoff_margin;
             bool trim_running = false;
             TickType_t bulk_deadline_tick = 0;
@@ -2162,26 +2159,24 @@ void charge_mode_wait_for_complete() {
             };
 
             if (bulk_running) {
-                float deadline_flow = bulk_phase_flow * (machine_calibrated ? 1.15f : 1.05f);
+                // This is a fallback deadline, not the normal coarse handoff. The
+                // scale-controlled stop below should fire first. Inflating flow and
+                // subtracting a guard made the fallback pre-empt the scale by nearly
+                // a second on RL17, leaving the fine motor with about 9 gn to deliver.
+                float deadline_flow = fmaxf(bulk_phase_flow, 0.05f);
                 uint32_t hard_stop_ms = charge_mode_compute_open_loop_stop_ms(target_weight,
                                                                               bulk_handoff_margin,
                                                                               deadline_flow,
-                                                                              machine_calibrated ? 0.28f : 0.35f);
+                                                                              0.0f);
                 if (hard_stop_ms > 0) {
-                    uint32_t max_bulk_ms = machine_calibrated
-                        ? (uint32_t)lroundf(fmaxf(controllable_bulk ? 650.0f : 140.0f,
-                                                  fminf(controllable_bulk ? 3200.0f : 420.0f,
-                                                        (target_weight *
-                                                         (controllable_bulk ? 0.72f : 0.42f) /
-                                                         fmaxf(deadline_flow, 0.05f)) *
-                                                            1000.0f)))
-                        : (uint32_t)lroundf(fmaxf(controllable_bulk ? 800.0f : 180.0f,
-                                                  fminf(controllable_bulk ? 3600.0f : 700.0f,
-                                                        (target_weight *
-                                                         (controllable_bulk ? 0.78f : 0.55f) /
-                                                         fmaxf(deadline_flow, 0.05f)) *
-                                                            1000.0f)));
-                    hard_stop_ms = (uint32_t)fminf((float)hard_stop_ms, (float)max_bulk_ms);
+                    float response_slack_ms = machine_calibrated &&
+                                              isfinite(runtime_model.machine.coarse_first_response_ms)
+                        ? runtime_model.machine.coarse_first_response_ms +
+                              runtime_model.machine.scale_sample_period_ms * 1.5f
+                        : 300.0f;
+                    response_slack_ms = fmaxf(180.0f, fminf(response_slack_ms, 450.0f));
+                    hard_stop_ms = (uint32_t)fminf((float)hard_stop_ms + response_slack_ms,
+                                                  8000.0f);
                 }
                 if (hard_stop_ms > 0) {
                     command_curved_coarse_motor(target_weight, bulk_handoff_margin, true);
