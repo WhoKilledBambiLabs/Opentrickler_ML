@@ -1,6 +1,6 @@
 # 2026.07.12-beta.11
 
-Status: early public beta, code complete and awaiting supervised powder testing.
+Status: early public beta, build and OTA verified; awaiting supervised powder testing.
 
 ## Purpose
 
@@ -50,7 +50,14 @@ The hardware is fast enough. The remaining problem is controlling coarse powder 
 - DataLab measured-dose self-test passes all approach, middle, micro, and no-progress escalation bounds against 16 observed recovery-flow samples.
 - Persistent AI history revision and binary layout remain unchanged.
 - Original collector sessions and DataLab source evidence remain untouched.
-- Full clean build, OTA, device identity, history preservation, and physical powder testing remain pending.
+- Two independent clean Pico 2 W Release builds completed all 383 targets with identical `.bin` and `.uf2` hashes.
+- Release image size is `833,052` bytes of flash and `268,760` bytes of RAM.
+- OTA staging and apply succeeded on the RP2350 test device at `192.168.40.97`.
+- The device reports `2026.07.12-beta.11`, source `53aad13`, configuration `Release`.
+- Profile 4 retained all 24 production observations across the update.
+- The rebuilt runtime model reports zero obsolete runtime bias, a `0.9375gn` fine window, and 19 measured recovery-flow observations with a `0.0608gn/s` median.
+- The packaged collector reports version `2.2.0-beta11`, schema 4, and passed all six tests during packaging.
+- Physical powder testing remains pending.
 
 ## Powder-Test Protocol
 
