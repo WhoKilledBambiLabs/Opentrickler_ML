@@ -1,5 +1,12 @@
 # Firmware Changelog
 
+## 2026.07.12-beta.14 - Complete-Tail Handoff
+
+- Stops adding live momentum to a production handoff margin that already measures motor stop through full settle.
+- Uses observed coarse-tail maximum plus bounded uncertainty instead of mean plus two standard deviations.
+- Makes the guarded recovery reserve a valid stop point rather than forcing repeated pulses toward the live target.
+- Shortens post-pulse observation after the reserve prevents immediate redosing.
+
 ## 2026.07.12-beta.13 - Production Flow Handoff
 
 - Uses the slower characterized coarse flow for the safety deadline and predictive handoff instead of the optimistic short-burst machine-calibration flow.
