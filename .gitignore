@@ -103,3 +103,9 @@ firmware_release_history/**/manifest.json
 firmware_release_history/external_comparisons/
 firmware_release_history/legacy_artifacts.csv
 firmware_release_history/session_index.md
+
+# Claude Code
+CLAUDE.md
+
+# Factory reset flash memory tool
+!reset_flash/nuke_universal.uf2
