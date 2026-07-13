@@ -1331,7 +1331,8 @@ void charge_mode_wait_for_complete() {
         }
 
         float observed_tail = settled_weight - stop_weight;
-        float max_plausible_tail = fmaxf(8.0f, charge_mode_config.target_charge_weight * 0.30f);
+        float max_plausible_tail = fmaxf(18.0f,
+                                         charge_mode_config.target_charge_weight * 0.50f);
         if (observed_tail >= 0.0f && observed_tail <= max_plausible_tail) {
             live_observed_coarse_tail_gn = observed_tail;
         }
@@ -1629,13 +1630,15 @@ void charge_mode_wait_for_complete() {
                 runtime_safety_ready &&
                 runtime_stats.coarse_late_count >= 3u &&
                 runtime_stats.coarse_late_rate > 0.15f;
-            const bool production_coarse_stable =
+            const bool production_coarse_ready =
                 runtime_stats_available &&
                 bulk_matches_saved_best &&
                 !bulk_matches_trim &&
                 runtime_stats.coarse_tail_count >= 6u &&
                 runtime_stats.coarse_tail_mean_gn > 0.0f &&
-                runtime_stats.coarse_tail_p95_gn >= runtime_stats.coarse_tail_mean_gn &&
+                runtime_stats.coarse_tail_p95_gn >= runtime_stats.coarse_tail_mean_gn;
+            const bool production_coarse_stable =
+                production_coarse_ready &&
                 runtime_stats.coarse_tail_sd_gn <=
                     fmaxf(0.35f, runtime_stats.coarse_tail_mean_gn * 0.15f);
             const bool production_fine_ready =
@@ -1961,13 +1964,13 @@ void charge_mode_wait_for_complete() {
                                     trim_flow < bulk_flow * 0.95f &&
                                     trim_tail_guard <= fmaxf(4.00f, target_weight * 0.10f);
             float production_bulk_floor = 0.0f;
-            if (production_coarse_stable &&
+            if (production_coarse_ready &&
                 !rejected_coarse_choice &&
                 !have_trim_coarse) {
                 const float production_tail_guard =
                     fmaxf(runtime_stats.coarse_tail_p95_gn,
                           runtime_stats.coarse_tail_mean_gn +
-                              runtime_stats.coarse_tail_sd_gn * 1.65f);
+                              runtime_stats.coarse_tail_sd_gn * 2.00f);
                 const float production_uncertainty =
                     fmaxf(0.06f,
                           fminf(runtime_stats.coarse_tail_sd_gn * 0.45f, 0.35f));
@@ -1978,8 +1981,10 @@ void charge_mode_wait_for_complete() {
                             runtime_stats.fine_tail_p90_gn + target_tolerance * 2.0f)
                     : fine_window;
                 production_bulk_floor = production_tail_guard + production_fine_reserve;
-                bulk_handoff_margin = fminf(bulk_handoff_margin,
-                                             production_bulk_margin);
+                if (production_coarse_stable) {
+                    bulk_handoff_margin = fminf(bulk_handoff_margin,
+                                                production_bulk_margin);
+                }
             }
 
             const float max_bulk_handoff_margin =
@@ -2158,12 +2163,17 @@ void charge_mode_wait_for_complete() {
                 return drained_weight;
             };
 
+            float coarse_control_flow = fmaxf(bulk_phase_flow, 0.05f);
+            if (characterized_bulk_flow > 0.05f) {
+                coarse_control_flow = fminf(coarse_control_flow,
+                                            characterized_bulk_flow);
+            }
             if (bulk_running) {
                 // This is a fallback deadline, not the normal coarse handoff. The
                 // scale-controlled stop below should fire first. Inflating flow and
                 // subtracting a guard made the fallback pre-empt the scale by nearly
                 // a second on RL17, leaving the fine motor with about 9 gn to deliver.
-                float deadline_flow = fmaxf(bulk_phase_flow, 0.05f);
+                float deadline_flow = coarse_control_flow;
                 uint32_t hard_stop_ms = charge_mode_compute_open_loop_stop_ms(target_weight,
                                                                               bulk_handoff_margin,
                                                                               deadline_flow,
@@ -2292,7 +2302,15 @@ void charge_mode_wait_for_complete() {
                     float bulk_stop_margin = bulk_handoff_margin + momentum_margin * 0.65f;
                     charge_mode_set_live_phase("bulk", remaining_weight, bulk_stop_margin);
                     command_curved_coarse_motor(remaining_weight, bulk_stop_margin, true);
-                    float effective_bulk_flow = fmaxf(bulk_phase_flow, observed_phase_flow);
+                    // Machine calibration measured a much faster short-burst flow than
+                    // production delivered. Use the conservative characterized flow
+                    // for the predictive handoff so it cannot stop bulk prematurely.
+                    float effective_bulk_flow = coarse_control_flow;
+                    if (observed_phase_flow > 0.05f) {
+                        effective_bulk_flow = fmaxf(
+                            effective_bulk_flow,
+                            fminf(observed_phase_flow, coarse_control_flow * 1.20f));
+                    }
                     float time_to_bulk_stop_s = (remaining_weight - bulk_stop_margin) /
                                                 fmaxf(effective_bulk_flow, 0.05f);
                     float predictive_horizon_s = fminf(1.25f,
@@ -2774,6 +2792,14 @@ void charge_mode_wait_for_complete() {
                         : (middle_zone
                                ? fmaxf(0.035f, target_tolerance * 1.35f)
                                : target_tolerance * 0.65f);
+                    if (recovery_guard_active) {
+                        // Recent recovery endpoints continued rising by about 0.06 gn
+                        // after the pulse was considered settled. Reserve that powder
+                        // before commanding another pulse instead of feeding to target.
+                        target_margin = fmaxf(target_margin,
+                                              fmaxf(0.050f,
+                                                    target_tolerance * 2.50f));
+                    }
                     float desired_add_gn = fmaxf(0.0f, remaining_weight - target_margin);
 
                     if (desired_add_gn <= 0.003f && !recovery_must_feed) {
@@ -2844,7 +2870,8 @@ void charge_mode_wait_for_complete() {
                     live_recovery_pulse_count = recovery_pulse_count;
 
                     float stop_weight = get_latest_measurement(120, pulse_start_weight);
-                    current_weight = wait_for_settled_measurement(700, stop_weight);
+                    current_weight = wait_for_settled_measurement(1100, stop_weight);
+                    current_weight = observe_motor_off_weight(450, current_weight);
                     mark_fine_stop(stop_weight, current_weight);
                     if (charge_mode_is_valid_scale_measurement(current_weight)) {
                         charge_mode_update_true_final_measurement(current_weight);

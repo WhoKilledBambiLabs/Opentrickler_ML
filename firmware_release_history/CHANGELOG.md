@@ -1,5 +1,13 @@
 # Firmware Changelog
 
+## 2026.07.12-beta.13 - Production Flow Handoff
+
+- Uses the slower characterized coarse flow for the safety deadline and predictive handoff instead of the optimistic short-burst machine-calibration flow.
+- Bounds live observed flow to 120 percent of characterized flow during coarse prediction.
+- Accepts large production coarse tails up to half the target and uses unstable tail evidence to widen, but never tighten, the handoff margin.
+- Reserves at least `0.050gn` when recent recovery finishes are overthrow-prone.
+- Extends motor-off observation after each recovery pulse so delayed fine-tube powder is measured before another dose.
+
 ## 2026.07.12-beta.12 - Coarse Deadline Correction
 
 - Moved the coarse open-loop safety deadline behind the normal scale-controlled handoff.
