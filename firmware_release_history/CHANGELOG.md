@@ -1,5 +1,18 @@
 # Firmware Changelog
 
+## 2026.07.15-beta.12 - Bootloader-Managed OTA And Browser Firmware Upload
+
+- Added a 32 KB first-stage bootloader that installs staged firmware with a power-loss-safe restartable copy, bounded trial boots, and automatic USB-recovery (BOOTSEL) fallback after three failed boot attempts.
+- Replaced the in-app self-overwrite OTA apply with a metadata handoff to the bootloader; the running firmware is never erased by the application itself.
+- Relinked the application to the 0x8000 app slot; `app.uf2` is now a combined bootloader + application + cleared-metadata install image, and `app.bin` remains the only OTA artifact.
+- Added firmware upload directly from the web portal Firmware Update page with progress, cancellation, install tracking through the reboot, and old-to-new version reporting.
+- Kept all `/rest/ota_*` endpoints request/response compatible; added `boot_state` and `bootloader_present` fields and vector-sanity rejection of images built for the wrong flash layout.
+- Added `--wait-for-boot`, local image vector checks, and a pre-bootloader device guard (`--force-legacy`) to `tools/ota_upload.py`.
+- Launched installed images with a manual vector jump after `rom_chain_image` failed to enter the application on hardware.
+- Pinned the bootloader to the plain 03h second-stage so the application's XIP setup always starts from a cold-equivalent flash state.
+- Centralized the flash layout and install metadata in `src/ota_layout.h`, shared by the application, the bootloader, and the combined-UF2 build script.
+- New firmware confirms its first successful boot at the top of `main()`; the app slot and bootloader region are never writable over OTA.
+
 ## 2026.07.12-beta.11 - Passive Coarse Settle And Measured Recovery
 
 - Removed powered coarse top-up from production throws after beta10 used it on every RL17 throw and frequently landed over target before fine control.
