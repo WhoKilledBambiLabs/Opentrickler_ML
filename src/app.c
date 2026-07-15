@@ -17,6 +17,7 @@
 #include "app.h"
 #include "motors.h"
 #include "eeprom.h"
+#include "ota_update.h"
 #include "scale.h"
 #include "display.h"
 #include "charge_mode.h"
@@ -31,6 +32,11 @@
 
 int main()
 {
+    // Confirm a freshly installed firmware to the bootloader before
+    // anything else can fail: this cancels the trial-boot watchdog and
+    // marks the image good. Must stay the first statement of main().
+    ota_boot_confirm();
+
     // stdio_init_all();
     // Initialize EEPROM first
     eeprom_init();

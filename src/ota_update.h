@@ -11,6 +11,11 @@ extern "C" {
 
 void ota_update_init(void);
 
+// Confirm a trial boot to the bootloader. Must be the first call in
+// main(): it disables the bootloader's trial watchdog and marks the
+// installed image as good before anything else can fail.
+void ota_boot_confirm(void);
+
 bool http_rest_ota_status(struct fs_file *file, int num_params, char *params[], char *values[]);
 bool http_rest_ota_begin(struct fs_file *file, int num_params, char *params[], char *values[]);
 bool http_rest_ota_chunk(struct fs_file *file, int num_params, char *params[], char *values[]);
