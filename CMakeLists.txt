@@ -99,6 +99,10 @@ target_link_libraries(u8g2_mui u8g2)
 # Pull in src
 add_subdirectory(${SRC_DIRECTORY})
 
+# First-stage bootloader (flash offset 0; installs staged OTA images and
+# chains into the app slot - see src/ota_layout.h for the flash map)
+add_subdirectory(${CMAKE_SOURCE_DIR}/bootloader)
+
 # Collect all source files
 file(GLOB SRC CONFIGURE_DEPENDS
               ${SRC_DIRECTORY}/*.c
@@ -136,5 +140,31 @@ target_link_libraries("${TARGET_NAME}"
 target_link_options("${TARGET_NAME}" PUBLIC -Wl,--gc-sections -Wl,--print-memory-usage)
 # set( CMAKE_VERBOSE_MAKEFILE on )
 
+# Link the application at the app slot (0x10008000) above the bootloader.
+# Same script as the SDK default except the FLASH region; the link fails
+# if the app would overlap the ML history region at 0x1FE000.
+pico_set_linker_script("${TARGET_NAME}" ${CMAKE_SOURCE_DIR}/linker/memmap_app.ld)
+
 # Generate extra outputs
 pico_add_extra_outputs("${TARGET_NAME}")
+
+# Rebuild app.uf2 as the combined BOOTSEL install image: bootloader at
+# flash 0, app in its slot, OTA metadata sector blanked (clears stale
+# legacy install state during migration). app.bin remains the OTA upload
+# artifact. Runs whenever either binary changes and overwrites the plain
+# app.uf2 that pico_add_extra_outputs generated.
+find_package(Python COMPONENTS Interpreter REQUIRED)
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/combined_uf2.stamp"
+    COMMAND "${Python_EXECUTABLE}" "${SCRIPTS_DIRECTORY}/make_combined_uf2.py"
+            --bootloader-bin "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
+            --app-bin "${CMAKE_BINARY_DIR}/${TARGET_NAME}.bin"
+            --layout-header "${SRC_DIRECTORY}/ota_layout.h"
+            --out "${CMAKE_BINARY_DIR}/${TARGET_NAME}.uf2"
+    COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/combined_uf2.stamp"
+    DEPENDS "${TARGET_NAME}" bootloader
+            "${SCRIPTS_DIRECTORY}/make_combined_uf2.py"
+            "${SRC_DIRECTORY}/ota_layout.h"
+    COMMENT "Building combined bootloader + app UF2"
+    VERBATIM)
+add_custom_target(combined_uf2 ALL DEPENDS "${CMAKE_BINARY_DIR}/combined_uf2.stamp")
