@@ -1331,7 +1331,8 @@ void charge_mode_wait_for_complete() {
         }
 
         float observed_tail = settled_weight - stop_weight;
-        float max_plausible_tail = fmaxf(8.0f, charge_mode_config.target_charge_weight * 0.30f);
+        float max_plausible_tail = fmaxf(18.0f,
+                                         charge_mode_config.target_charge_weight * 0.50f);
         if (observed_tail >= 0.0f && observed_tail <= max_plausible_tail) {
             live_observed_coarse_tail_gn = observed_tail;
         }
@@ -1629,13 +1630,15 @@ void charge_mode_wait_for_complete() {
                 runtime_safety_ready &&
                 runtime_stats.coarse_late_count >= 3u &&
                 runtime_stats.coarse_late_rate > 0.15f;
-            const bool production_coarse_stable =
+            const bool production_coarse_ready =
                 runtime_stats_available &&
                 bulk_matches_saved_best &&
                 !bulk_matches_trim &&
                 runtime_stats.coarse_tail_count >= 6u &&
                 runtime_stats.coarse_tail_mean_gn > 0.0f &&
-                runtime_stats.coarse_tail_p95_gn >= runtime_stats.coarse_tail_mean_gn &&
+                runtime_stats.coarse_tail_p95_gn >= runtime_stats.coarse_tail_mean_gn;
+            const bool production_coarse_stable =
+                production_coarse_ready &&
                 runtime_stats.coarse_tail_sd_gn <=
                     fmaxf(0.35f, runtime_stats.coarse_tail_mean_gn * 0.15f);
             const bool production_fine_ready =
@@ -1961,16 +1964,15 @@ void charge_mode_wait_for_complete() {
                                     trim_flow < bulk_flow * 0.95f &&
                                     trim_tail_guard <= fmaxf(4.00f, target_weight * 0.10f);
             float production_bulk_floor = 0.0f;
-            if (production_coarse_stable &&
+            if (production_coarse_ready &&
                 !rejected_coarse_choice &&
                 !have_trim_coarse) {
                 const float production_tail_guard =
                     fmaxf(runtime_stats.coarse_tail_p95_gn,
-                          runtime_stats.coarse_tail_mean_gn +
-                              runtime_stats.coarse_tail_sd_gn * 1.65f);
+                          runtime_stats.coarse_tail_max_gn);
                 const float production_uncertainty =
-                    fmaxf(0.06f,
-                          fminf(runtime_stats.coarse_tail_sd_gn * 0.45f, 0.35f));
+                    fmaxf(0.08f,
+                          fminf(runtime_stats.coarse_tail_sd_gn * 0.20f, 0.35f));
                 const float production_bulk_margin =
                     production_tail_guard + fine_window + production_uncertainty;
                 const float production_fine_reserve = production_fine_stable
@@ -1978,8 +1980,10 @@ void charge_mode_wait_for_complete() {
                             runtime_stats.fine_tail_p90_gn + target_tolerance * 2.0f)
                     : fine_window;
                 production_bulk_floor = production_tail_guard + production_fine_reserve;
-                bulk_handoff_margin = fminf(bulk_handoff_margin,
-                                             production_bulk_margin);
+                if (production_coarse_stable) {
+                    bulk_handoff_margin = fminf(bulk_handoff_margin,
+                                                production_bulk_margin);
+                }
             }
 
             const float max_bulk_handoff_margin =
@@ -2009,9 +2013,6 @@ void charge_mode_wait_for_complete() {
                          planning_bulk_tail,
                          trim_tail_guard);
             }
-            const bool controllable_bulk =
-                (bulk_tail <= production_safe_coarse_tail + (derived_trim_coarse ? 0.85f : 0.0f)) &&
-                (!have_trim_coarse || bulk_speed <= trim_speed * 4.25f);
             bool bulk_running = target_weight > bulk_handoff_margin;
             bool trim_running = false;
             TickType_t bulk_deadline_tick = 0;
@@ -2029,6 +2030,9 @@ void charge_mode_wait_for_complete() {
             uint8_t recovery_no_progress_count = 0;
             const float micro_heal_entry_gn = fmaxf(0.18f, target_tolerance * 7.0f);
             const float recovery_force_feed_gn = fmaxf(0.030f, target_tolerance * 1.55f);
+            const float guarded_recovery_reserve_gn = recovery_guard_active
+                ? fmaxf(0.050f, target_tolerance * 2.50f)
+                : 0.0f;
             const float production_fine_stop_floor = production_fine_ready
                 ? fminf(fine_tail_cap,
                         production_fast_tail_guard + target_tolerance * 0.50f)
@@ -2161,27 +2165,30 @@ void charge_mode_wait_for_complete() {
                 return drained_weight;
             };
 
+            float coarse_control_flow = fmaxf(bulk_phase_flow, 0.05f);
+            if (characterized_bulk_flow > 0.05f) {
+                coarse_control_flow = fminf(coarse_control_flow,
+                                            characterized_bulk_flow);
+            }
             if (bulk_running) {
-                float deadline_flow = bulk_phase_flow * (machine_calibrated ? 1.15f : 1.05f);
+                // This is a fallback deadline, not the normal coarse handoff. The
+                // scale-controlled stop below should fire first. Inflating flow and
+                // subtracting a guard made the fallback pre-empt the scale by nearly
+                // a second on RL17, leaving the fine motor with about 9 gn to deliver.
+                float deadline_flow = coarse_control_flow;
                 uint32_t hard_stop_ms = charge_mode_compute_open_loop_stop_ms(target_weight,
                                                                               bulk_handoff_margin,
                                                                               deadline_flow,
-                                                                              machine_calibrated ? 0.28f : 0.35f);
+                                                                              0.0f);
                 if (hard_stop_ms > 0) {
-                    uint32_t max_bulk_ms = machine_calibrated
-                        ? (uint32_t)lroundf(fmaxf(controllable_bulk ? 650.0f : 140.0f,
-                                                  fminf(controllable_bulk ? 3200.0f : 420.0f,
-                                                        (target_weight *
-                                                         (controllable_bulk ? 0.72f : 0.42f) /
-                                                         fmaxf(deadline_flow, 0.05f)) *
-                                                            1000.0f)))
-                        : (uint32_t)lroundf(fmaxf(controllable_bulk ? 800.0f : 180.0f,
-                                                  fminf(controllable_bulk ? 3600.0f : 700.0f,
-                                                        (target_weight *
-                                                         (controllable_bulk ? 0.78f : 0.55f) /
-                                                         fmaxf(deadline_flow, 0.05f)) *
-                                                            1000.0f)));
-                    hard_stop_ms = (uint32_t)fminf((float)hard_stop_ms, (float)max_bulk_ms);
+                    float response_slack_ms = machine_calibrated &&
+                                              isfinite(runtime_model.machine.coarse_first_response_ms)
+                        ? runtime_model.machine.coarse_first_response_ms +
+                              runtime_model.machine.scale_sample_period_ms * 1.5f
+                        : 300.0f;
+                    response_slack_ms = fmaxf(180.0f, fminf(response_slack_ms, 450.0f));
+                    hard_stop_ms = (uint32_t)fminf((float)hard_stop_ms + response_slack_ms,
+                                                  8000.0f);
                 }
                 if (hard_stop_ms > 0) {
                     command_curved_coarse_motor(target_weight, bulk_handoff_margin, true);
@@ -2294,10 +2301,23 @@ void charge_mode_wait_for_complete() {
                 previous_weight = current_weight;
 
                 if (bulk_running) {
-                    float bulk_stop_margin = bulk_handoff_margin + momentum_margin * 0.65f;
+                    // The production margin is measured from motor stop through full
+                    // settle, so it already contains momentum and powder in flight.
+                    float bulk_stop_margin = bulk_handoff_margin;
+                    if (!production_coarse_ready) {
+                        bulk_stop_margin += momentum_margin * 0.65f;
+                    }
                     charge_mode_set_live_phase("bulk", remaining_weight, bulk_stop_margin);
                     command_curved_coarse_motor(remaining_weight, bulk_stop_margin, true);
-                    float effective_bulk_flow = fmaxf(bulk_phase_flow, observed_phase_flow);
+                    // Machine calibration measured a much faster short-burst flow than
+                    // production delivered. Use the conservative characterized flow
+                    // for the predictive handoff so it cannot stop bulk prematurely.
+                    float effective_bulk_flow = coarse_control_flow;
+                    if (observed_phase_flow > 0.05f) {
+                        effective_bulk_flow = fmaxf(
+                            effective_bulk_flow,
+                            fminf(observed_phase_flow, coarse_control_flow * 1.20f));
+                    }
                     float time_to_bulk_stop_s = (remaining_weight - bulk_stop_margin) /
                                                 fmaxf(effective_bulk_flow, 0.05f);
                     float predictive_horizon_s = fminf(1.25f,
@@ -2662,7 +2682,7 @@ void charge_mode_wait_for_complete() {
                                       target_tolerance * (high_tail_tube ? 0.50f : 0.35f)));
                 if (recovery_guard_active) {
                     recovery_feed_stop_margin =
-                        fminf(recovery_feed_stop_margin, target_tolerance * 0.95f);
+                        fmaxf(recovery_feed_stop_margin, guarded_recovery_reserve_gn);
                 }
                 const float active_recovery_force_feed_gn = recovery_guard_active
                     ? target_tolerance * 1.05f
@@ -2779,6 +2799,13 @@ void charge_mode_wait_for_complete() {
                         : (middle_zone
                                ? fmaxf(0.035f, target_tolerance * 1.35f)
                                : target_tolerance * 0.65f);
+                    if (recovery_guard_active) {
+                        // Recent recovery endpoints continued rising by about 0.06 gn
+                        // after the pulse was considered settled. Reserve that powder
+                        // before commanding another pulse instead of feeding to target.
+                        target_margin = fmaxf(target_margin,
+                                              guarded_recovery_reserve_gn);
+                    }
                     float desired_add_gn = fmaxf(0.0f, remaining_weight - target_margin);
 
                     if (desired_add_gn <= 0.003f && !recovery_must_feed) {
@@ -2792,8 +2819,13 @@ void charge_mode_wait_for_complete() {
                             live_recovery_exit_reason = RECOVERY_EXIT_TOLERANCE;
                             break;
                         }
+                        if (recovery_guard_active &&
+                            after_wait_under <= guarded_recovery_reserve_gn) {
+                            live_recovery_exit_reason = RECOVERY_EXIT_GUARD_STOP;
+                            break;
+                        }
                         desired_add_gn = fmaxf(0.004f,
-                                               after_wait_under - target_tolerance * 0.65f);
+                                               after_wait_under - target_margin);
                     }
 
                     float dose_speed = recovery_micro_speed;
@@ -2849,7 +2881,8 @@ void charge_mode_wait_for_complete() {
                     live_recovery_pulse_count = recovery_pulse_count;
 
                     float stop_weight = get_latest_measurement(120, pulse_start_weight);
-                    current_weight = wait_for_settled_measurement(700, stop_weight);
+                    current_weight = wait_for_settled_measurement(800, stop_weight);
+                    current_weight = observe_motor_off_weight(250, current_weight);
                     mark_fine_stop(stop_weight, current_weight);
                     if (charge_mode_is_valid_scale_measurement(current_weight)) {
                         charge_mode_update_true_final_measurement(current_weight);
@@ -2877,6 +2910,11 @@ void charge_mode_wait_for_complete() {
                     }
                     if (settled_under_weight <= target_tolerance) {
                         live_recovery_exit_reason = RECOVERY_EXIT_TOLERANCE;
+                        break;
+                    }
+                    if (recovery_guard_active &&
+                        settled_under_weight <= guarded_recovery_reserve_gn) {
+                        live_recovery_exit_reason = RECOVERY_EXIT_GUARD_STOP;
                         break;
                     }
 

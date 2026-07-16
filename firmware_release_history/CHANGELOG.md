@@ -1,5 +1,26 @@
 # Firmware Changelog
 
+## 2026.07.12-beta.14 - Complete-Tail Handoff
+
+- Stops adding live momentum to a production handoff margin that already measures motor stop through full settle.
+- Uses observed coarse-tail maximum plus bounded uncertainty instead of mean plus two standard deviations.
+- Makes the guarded recovery reserve a valid stop point rather than forcing repeated pulses toward the live target.
+- Shortens post-pulse observation after the reserve prevents immediate redosing.
+
+## 2026.07.12-beta.13 - Production Flow Handoff
+
+- Uses the slower characterized coarse flow for the safety deadline and predictive handoff instead of the optimistic short-burst machine-calibration flow.
+- Bounds live observed flow to 120 percent of characterized flow during coarse prediction.
+- Accepts large production coarse tails up to half the target and uses unstable tail evidence to widen, but never tighten, the handoff margin.
+- Reserves at least `0.050gn` when recent recovery finishes are overthrow-prone.
+- Extends motor-off observation after each recovery pulse so delayed fine-tube powder is measured before another dose.
+
+## 2026.07.12-beta.12 - Coarse Deadline Correction
+
+- Moved the coarse open-loop safety deadline behind the normal scale-controlled handoff.
+- Removed the target-percentage deadline cap that stopped RL17 coarse delivery at `20.78gn` and left about `9gn` for fine.
+- Retained beta11 passive coarse settling, stable characterization, and bounded measured recovery.
+
 ## 2026.07.12-beta.11 - Passive Coarse Settle And Measured Recovery
 
 - Removed powered coarse top-up from production throws after beta10 used it on every RL17 throw and frequently landed over target before fine control.
