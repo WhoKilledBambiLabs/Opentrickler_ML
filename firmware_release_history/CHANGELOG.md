@@ -1,6 +1,6 @@
 # Firmware Changelog
 
-## 2026.07.15-beta.12 - Bootloader-Managed OTA And Browser Firmware Upload
+## 2026.07.15-beta.15 - Bootloader-Managed OTA And Browser Firmware Upload
 
 - Added a 32 KB first-stage bootloader that installs staged firmware with a power-loss-safe restartable copy, bounded trial boots, and automatic USB-recovery (BOOTSEL) fallback after three failed boot attempts.
 - Replaced the in-app self-overwrite OTA apply with a metadata handoff to the bootloader; the running firmware is never erased by the application itself.
@@ -12,6 +12,31 @@
 - Pinned the bootloader to the plain 03h second-stage so the application's XIP setup always starts from a cold-equivalent flash state.
 - Centralized the flash layout and install metadata in `src/ota_layout.h`, shared by the application, the bootloader, and the combined-UF2 build script.
 - New firmware confirms its first successful boot at the top of `main()`; the app slot and bootloader region are never writable over OTA.
+- Built on pico-sdk and picotool 2.3.0 (submodule upgrade).
+- Migrated the application and bootloader linker scripts to the SDK default `memmap_default.ld`, overriding only the flash region (app slot `0x8000` / 32 KB bootloader budget) with `pico_add_linker_script_override_path`, replacing the frozen pico-sdk 2.2.0 copies so the layout tracks the SDK.
+- Suppressed the redundant standalone picotool UF2 for the OTA-slot targets (`app`, `chain_test`); picotool 2.3.0 rejects their RP2350 scratch-stack segment during UF2 conversion. The combined `app.uf2` stays the BOOTSEL image and `app.bin` the OTA artifact. See issue ledger OT-BUILD-001.
+
+
+## 2026.07.12-beta.14 - Complete-Tail Handoff
+
+- Stops adding live momentum to a production handoff margin that already measures motor stop through full settle.
+- Uses observed coarse-tail maximum plus bounded uncertainty instead of mean plus two standard deviations.
+- Makes the guarded recovery reserve a valid stop point rather than forcing repeated pulses toward the live target.
+- Shortens post-pulse observation after the reserve prevents immediate redosing.
+
+## 2026.07.12-beta.13 - Production Flow Handoff
+
+- Uses the slower characterized coarse flow for the safety deadline and predictive handoff instead of the optimistic short-burst machine-calibration flow.
+- Bounds live observed flow to 120 percent of characterized flow during coarse prediction.
+- Accepts large production coarse tails up to half the target and uses unstable tail evidence to widen, but never tighten, the handoff margin.
+- Reserves at least `0.050gn` when recent recovery finishes are overthrow-prone.
+- Extends motor-off observation after each recovery pulse so delayed fine-tube powder is measured before another dose.
+
+## 2026.07.12-beta.12 - Coarse Deadline Correction
+
+- Moved the coarse open-loop safety deadline behind the normal scale-controlled handoff.
+- Removed the target-percentage deadline cap that stopped RL17 coarse delivery at `20.78gn` and left about `9gn` for fine.
+- Retained beta11 passive coarse settling, stable characterization, and bounded measured recovery.
 
 ## 2026.07.12-beta.11 - Passive Coarse Settle And Measured Recovery
 

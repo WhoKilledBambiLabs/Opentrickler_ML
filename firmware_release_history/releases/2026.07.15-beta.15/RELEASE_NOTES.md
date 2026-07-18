@@ -1,10 +1,10 @@
-# 2026.07.15-beta.12
+# 2026.07.15-beta.15
 
-Status: early public beta; bootloader, OTA install, failure recovery, and browser upload verified on hardware. Charge behavior is unchanged from beta 11.
+Status: early public beta; bootloader, OTA install, failure recovery, and browser upload verified on hardware. Charge behavior is unchanged from beta 14.
 
 ## Purpose
 
-Beta 12 replaces the riskiest part of the firmware update path. Previous betas applied OTA updates by letting the running application erase and overwrite itself; a power loss during that copy left the controller unbootable until USB recovery. Beta 12 introduces a first-stage bootloader that owns installation, survives power loss at any point, bounds failed boot attempts, and always leaves a USB recovery path. It also adds firmware upload directly from the web portal, removing the need for the Python tool in normal use.
+Beta 15 replaces the riskiest part of the firmware update path. Previous betas applied OTA updates by letting the running application erase and overwrite itself; a power loss during that copy left the controller unbootable until USB recovery. Beta 12 introduces a first-stage bootloader that owns installation, survives power loss at any point, bounds failed boot attempts, and always leaves a USB recovery path. It also adds firmware upload directly from the web portal, removing the need for the Python tool in normal use.
 
 ## Firmware Changes
 
@@ -16,6 +16,13 @@ Beta 12 replaces the riskiest part of the firmware update path. Previous betas a
 - All `/rest/ota_*` endpoints keep their request and response shapes; `boot_state` and `bootloader_present` fields are added, and images built for the pre-bootloader layout are rejected by vector sanity checks on the device, in the browser, and in the Python tool.
 - `tools/ota_upload.py` gains `--wait-for-boot` (polls through the install reboot until the new firmware confirms) and refuses `--apply` against pre-bootloader devices unless `--force-legacy` is passed.
 - The bootloader and application slots are never writable over OTA; OTA flash writes are range-limited to the metadata and staging regions.
+
+## Build and Toolchain
+
+- The firmware is now built on pico-sdk and picotool 2.3.0 (submodule upgrade).
+- The application and bootloader linker scripts now use the SDK's default `memmap_default.ld` and override only the flash region (app slot `0x8000` / 32 KB bootloader budget) through `pico_add_linker_script_override_path`, replacing the frozen pico-sdk 2.2.0 copies. The section layout now tracks the SDK on future upgrades; boot2 handling and the linked flash slots are unchanged.
+- The standalone picotool UF2 for the OTA-slot targets (`app`, `chain_test`) is suppressed: picotool 2.3.0 rejects their RP2350 core-1 scratch-stack segment during UF2 conversion, and a raw app-slot UF2 is not independently bootable. This is a build-only change with no effect on the binary — the combined `app.uf2` and `app.bin` are byte-identical with or without it.
+- Verification status: the picotool change is binary-neutral. The SDK 2.3.0 build and linker migration shift the section layout slightly (application `+~32 B`, bootloader `+~16 B`) and post-date the 2026-07-15 bench session; they were confirmed separately on hardware on 2026-07-18 — a BOOTSEL boot plus a full web-portal OTA install, trial boot, and confirmation cycle (issue ledger OT-BUILD-001).
 
 ## Flash Layout
 
@@ -31,9 +38,9 @@ Saved AI models, profiles, and EEPROM settings are preserved across migration an
 
 ## Migration
 
-Devices on beta 11 or earlier must be flashed **once over USB** with the beta 12 `app.uf2` (BOOTSEL: hold the button, plug in USB, copy the file). The UF2 carries the bootloader and clears stale install state.
+Devices on beta 14 or earlier must be flashed **once over USB** with the beta 15 `app.uf2` (BOOTSEL: hold the button, plug in USB, copy the file). The UF2 carries the bootloader and clears stale install state.
 
-**Never upload the beta 12 `app.bin` through a pre-bootloader device's OTA page or tool.** The old firmware would copy it to the wrong flash address and the device would not boot until USB recovery. The new tool and web page both refuse this; old fielded firmware cannot be fixed retroactively, so the USB-first rule must be followed for the migration step.
+**Never upload the beta 15 `app.bin` through a pre-bootloader device's OTA page or tool.** The old firmware would copy it to the wrong flash address and the device would not boot until USB recovery. The new tool and web page both refuse this; old fielded firmware cannot be fixed retroactively, so the USB-first rule must be followed for the migration step.
 
 ## Verification
 
@@ -43,9 +50,11 @@ All on the RP2350 test device during the 2026-07-15 bench session:
 - Full OTA cycle via `tools/ota_upload.py --apply --wait-for-boot`: upload, bootloader install, trial boot, automatic confirmation, correct version reported (H2).
 - Power pulled during the bootloader copy: install resumed and completed on the next boot. A test image that hangs before confirmation was retried three times and the device then entered BOOTSEL for USB recovery (H3).
 - Browser upload end-to-end from the Firmware Update page, tracked through the reboot to confirmation (H4).
-- The new tool refuses `--apply` against a beta 11 device without `--force-legacy` (H5).
+- The new tool refuses `--apply` against a beta 14 device without `--force-legacy` (H5).
 - Flash dumps after BOOTSEL installs compared byte-identical to the built binaries (bootloader, full application image, metadata sector).
 - The REST protocol suite passes against the `tests/web_test.py` mock, including upload, simulated reboot, chunk-failure, and stuck-trial scenarios.
+
+The bench evidence above was captured before the pico-sdk 2.3.0 build and linker migration (see Build and Toolchain). That toolchain change was confirmed separately on 2026-07-18: the beta.15 build boots via BOOTSEL, and a web-portal OTA install of a higher-version test image onto a beta.15 device staged, trial-booted, and auto-confirmed with correct old-to-new version reporting (OT-BUILD-001). The verified behavior and logic are unchanged.
 
 Bring-up evidence: `rom_chain_image` never entered the application (flash-trace markers); the manual vector jump launch and the 03h bootloader second-stage are the verified mechanisms (see issue ledger OT-OTA-002, OT-OTA-003).
 

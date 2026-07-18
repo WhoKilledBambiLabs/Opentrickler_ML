@@ -30,9 +30,11 @@ else()
 endif()
 pico_enable_stdio_usb(bootloader 0)
 
-# Same script as the SDK default except FLASH is the 32 KB bootloader
-# region; the link fails if the bootloader outgrows its budget.
-pico_set_linker_script(bootloader ${CMAKE_SOURCE_DIR}/linker/memmap_bootloader.ld)
+# Use the SDK's default linker script and override only the FLASH MEMORY
+# region to the 32 KB bootloader budget at flash offset 0; the link fails if
+# the bootloader outgrows it. Tracks the SDK layout on future upgrades.
+pico_add_linker_script_override_path(bootloader
+    ${CMAKE_SOURCE_DIR}/linker/bootloader_flash_region FILES pico_flash_region.ld)
 
 # The bootloader must use the plain serial 03h boot2, NOT the default
 # W25Q080 one: the default leaves the QSPI flash chip in continuous-read
@@ -51,5 +53,12 @@ pico_add_extra_outputs(bootloader)
 # then visible as the RPI-RP2 drive with no display or network attached.
 add_executable(chain_test EXCLUDE_FROM_ALL chain_test.c)
 target_link_libraries(chain_test pico_stdlib pico_bootrom hardware_flash)
-pico_set_linker_script(chain_test ${CMAKE_SOURCE_DIR}/linker/memmap_app.ld)
+pico_add_linker_script_override_path(chain_test
+    ${CMAKE_SOURCE_DIR}/linker/app_flash_region FILES pico_flash_region.ld)
+# Skip the standalone picotool UF2: like the app, chain_test is linked for the
+# OTA slot (0x10008000), so a raw UF2 is not independently bootable, and
+# picotool 2.3.0 rejects its scratch stack segment. Flash chain_test.bin via
+# OTA, or build a combined bootloader+chain_test image.
+set(PICO_NO_UF2 1)
 pico_add_extra_outputs(chain_test)
+unset(PICO_NO_UF2)

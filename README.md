@@ -6,7 +6,7 @@ Public beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 control
 
 ## Project Status
 
-- Current beta identity: `2026.07.12-beta.11`
+- Current beta identity: `2026.07.15-beta.15`
 - Supported controller: Raspberry Pi Pico 2 W / RP2350 only
 - Unsupported controller: Raspberry Pi Pico W / RP2040
 - Repository status: public beta, early release
@@ -127,7 +127,7 @@ Firmware updates are installed by a small first-stage bootloader at the start of
 
 The bootloader itself is only ever updated over USB, never by OTA.
 
-**Migration warning:** devices on beta 11 or earlier must be flashed once over USB with the new `app.uf2` (it carries the bootloader). Never upload this build's `app.bin` through an older device's OTA page — the old firmware would copy it to the wrong flash address and the device would need USB recovery.
+**Migration warning:** devices on beta 14 or earlier must be flashed once over USB with the new `app.uf2` (it carries the bootloader). Never upload this build's `app.bin` through an older device's OTA page — the old firmware would copy it to the wrong flash address and the device would need USB recovery.
 
 ## Creating A Profile
 
@@ -198,7 +198,7 @@ Useful outputs:
 
 ## Flashing And OTA
 
-USB first install, one-time migration from beta 11 or earlier, or recovery:
+USB first install, one-time migration from beta 14 or earlier, or recovery:
 
 1. Disconnect motor power.
 2. Hold BOOTSEL while plugging in USB.
