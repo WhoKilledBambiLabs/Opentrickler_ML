@@ -99,6 +99,10 @@ target_link_libraries(u8g2_mui u8g2)
 # Pull in src
 add_subdirectory(${SRC_DIRECTORY})
 
+# First-stage bootloader (flash offset 0; installs staged OTA images and
+# chains into the app slot - see src/ota_layout.h for the flash map)
+add_subdirectory(${CMAKE_SOURCE_DIR}/bootloader)
+
 # Collect all source files
 file(GLOB SRC CONFIGURE_DEPENDS
               ${SRC_DIRECTORY}/*.c
@@ -136,5 +140,39 @@ target_link_libraries("${TARGET_NAME}"
 target_link_options("${TARGET_NAME}" PUBLIC -Wl,--gc-sections -Wl,--print-memory-usage)
 # set( CMAKE_VERBOSE_MAKEFILE on )
 
-# Generate extra outputs
+# Link the application into the OTA app slot. Use the SDK's default linker
+# script and override only the FLASH MEMORY region to the app slot at
+# 0x10008000 (above the 32 KB bootloader, ending before the ML history region
+# at flash offset 0x1FE000). Tracks the SDK layout on future upgrades.
+pico_add_linker_script_override_path("${TARGET_NAME}"
+    ${CMAKE_SOURCE_DIR}/linker/app_flash_region FILES pico_flash_region.ld)
+
+# Generate extra outputs. Skip the standalone picotool UF2 for the app: it is
+# linked for the OTA slot (0x10008000) so a raw UF2 is not a valid flash image,
+# picotool 2.3.0 rejects its core-1 scratch stack segment (SCRATCH_X 0x20080000),
+# and the combined_uf2 step below overwrites app.uf2 with the real BOOTSEL image
+# anyway. app.bin remains the OTA artifact.
+set(PICO_NO_UF2 1)
 pico_add_extra_outputs("${TARGET_NAME}")
+unset(PICO_NO_UF2)
+
+# Rebuild app.uf2 as the combined BOOTSEL install image: bootloader at
+# flash 0, app in its slot, OTA metadata sector blanked (clears stale
+# legacy install state during migration). app.bin remains the OTA upload
+# artifact. Runs whenever either binary changes and overwrites the plain
+# app.uf2 that pico_add_extra_outputs generated.
+find_package(Python COMPONENTS Interpreter REQUIRED)
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/combined_uf2.stamp"
+    COMMAND "${Python_EXECUTABLE}" "${SCRIPTS_DIRECTORY}/make_combined_uf2.py"
+            --bootloader-bin "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
+            --app-bin "${CMAKE_BINARY_DIR}/${TARGET_NAME}.bin"
+            --layout-header "${SRC_DIRECTORY}/ota_layout.h"
+            --out "${CMAKE_BINARY_DIR}/${TARGET_NAME}.uf2"
+    COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/combined_uf2.stamp"
+    DEPENDS "${TARGET_NAME}" bootloader
+            "${SCRIPTS_DIRECTORY}/make_combined_uf2.py"
+            "${SRC_DIRECTORY}/ota_layout.h"
+    COMMENT "Building combined bootloader + app UF2"
+    VERBATIM)
+add_custom_target(combined_uf2 ALL DEPENDS "${CMAKE_BINARY_DIR}/combined_uf2.stamp")

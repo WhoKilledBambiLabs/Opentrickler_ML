@@ -9,12 +9,11 @@
 
 #include "common.h"
 #include "flash_storage.h"
+#include "ota_layout.h"
 #include "hardware/flash.h"
-#include "hardware/regs/psm.h"
-#include "hardware/regs/watchdog.h"
-#include "hardware/structs/psm.h"
 #include "hardware/structs/watchdog.h"
 #include "hardware/sync.h"
+#include "hardware/watchdog.h"
 #include "pico/flash.h"
 #include "pico/platform.h"
 
@@ -22,33 +21,19 @@
 #define PICO_FLASH_SIZE_BYTES (4u * 1024u * 1024u)
 #endif
 
-#ifndef OTA_BOOTLOADER_APPLY_SUPPORTED
-#define OTA_BOOTLOADER_APPLY_SUPPORTED 1
-#endif
+// Flash layout, metadata record and CRC helpers live in ota_layout.h,
+// shared with bootloader/main.c and scripts/make_combined_uf2.py.
 
-#define OTA_PRIMARY_SLOT_BYTES        (2u * 1024u * 1024u)
-#define OTA_METADATA_OFFSET           OTA_PRIMARY_SLOT_BYTES
-#define OTA_IMAGE_OFFSET              (OTA_METADATA_OFFSET + FLASH_SECTOR_SIZE)
-#define OTA_METADATA_MAGIC            0x3155544Fu  // "OTU1" little-endian
-#define OTA_METADATA_VERSION          1u
-#define OTA_METADATA_FLAG_VERIFIED    (1u << 0)
 #define OTA_MAX_ERROR_LEN             96u
 #define OTA_MAX_CHUNK_BYTES           (FLASH_PAGE_SIZE * 2u)
 #define OTA_APPLY_DELAY_MS            750u
 #define OTA_APPLY_TASK_STACK_WORDS    1024u
-#define OTA_ALIGN_UP(value, align)    (((value) + ((align) - 1u)) & ~((align) - 1u))
 
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t image_size;
-    uint32_t expected_crc32;
-    uint32_t actual_crc32;
-    uint32_t flags;
-    uint32_t image_offset;
-    uint32_t primary_limit;
-    uint32_t reserved[8];
-} ota_metadata_t;
+// Vector sanity limits for uploaded images: word 0 is the initial stack
+// pointer (must be in SRAM), word 1 the reset handler (must be inside the
+// app slot). Rejects images linked for the pre-bootloader layout.
+#define OTA_SRAM_BASE                 0x20000000u
+#define OTA_SRAM_END                  0x20082000u  // 512 KB + scratch X/Y
 
 typedef struct {
     bool active;
@@ -59,12 +44,6 @@ typedef struct {
     uint32_t received_size;
     char last_error[OTA_MAX_ERROR_LEN];
 } ota_session_t;
-
-typedef struct {
-    uint32_t image_size;
-    uint32_t expected_crc32;
-    uint32_t actual_crc32;
-} ota_apply_params_t;
 
 typedef enum {
     OTA_FLASH_OP_ERASE = 0,
@@ -79,38 +58,34 @@ typedef struct {
 } ota_flash_op_t;
 
 static ota_session_t g_ota_session = {0};
-static ota_apply_params_t g_ota_apply_params = {0};
 static volatile bool g_ota_apply_scheduled = false;
 static ota_flash_op_t g_flash_op = {0};
 static uint8_t g_flash_page[OTA_MAX_CHUNK_BYTES] __attribute__((aligned(4)));
-static char g_ota_response[1024];
+static char g_ota_response[1280];
+
+// The layout is fixed at compile time for the 4 MB Pico 2 W flash; keep a
+// build-time consistency check instead of runtime probing.
+_Static_assert(OTA_LAYOUT_STAGING_OFFSET + OTA_LAYOUT_STAGING_SIZE <= PICO_FLASH_SIZE_BYTES,
+               "staging region must fit the flash");
 
 static uint32_t ota_storage_capacity(void) {
-    if (PICO_FLASH_SIZE_BYTES <= OTA_IMAGE_OFFSET) {
-        return 0;
-    }
-    return (uint32_t)(PICO_FLASH_SIZE_BYTES - OTA_IMAGE_OFFSET);
+    return OTA_LAYOUT_STAGING_SIZE;
 }
 
 static uint32_t ota_primary_image_limit(void) {
-    if (FLASH_STORAGE_ML_HISTORY_OFFSET < OTA_PRIMARY_SLOT_BYTES) {
-        return FLASH_STORAGE_ML_HISTORY_OFFSET;
-    }
-    return OTA_PRIMARY_SLOT_BYTES;
+    return OTA_LAYOUT_MAX_IMAGE_SIZE;
 }
 
 static bool ota_supported(void) {
-    return ota_storage_capacity() >= (256u * 1024u) &&
-           ota_primary_image_limit() > 0 &&
-           OTA_IMAGE_OFFSET < PICO_FLASH_SIZE_BYTES;
+    return true;
 }
 
 static const ota_metadata_t *ota_metadata_flash(void) {
-    return (const ota_metadata_t *)(XIP_BASE + OTA_METADATA_OFFSET);
+    return (const ota_metadata_t *)(XIP_BASE + OTA_LAYOUT_METADATA_OFFSET);
 }
 
 static const uint8_t *ota_image_flash(void) {
-    return (const uint8_t *)(XIP_BASE + OTA_IMAGE_OFFSET);
+    return (const uint8_t *)(XIP_BASE + OTA_LAYOUT_STAGING_OFFSET);
 }
 
 static bool ota_staged_image_has_container_magic(const uint8_t *image, uint32_t image_size) {
@@ -126,105 +101,36 @@ static bool ota_staged_image_has_container_magic(const uint8_t *image, uint32_t 
 }
 
 static bool ota_metadata_is_valid(const ota_metadata_t *meta) {
-    if (!ota_supported() || meta == NULL) {
+    if (meta == NULL) {
         return false;
     }
     if (meta->magic != OTA_METADATA_MAGIC || meta->version != OTA_METADATA_VERSION) {
         return false;
     }
+    if (meta->struct_crc32 != ota_metadata_struct_crc(meta)) {
+        // Torn write: treat the record as blank.
+        return false;
+    }
     if ((meta->flags & OTA_METADATA_FLAG_VERIFIED) == 0) {
         return false;
     }
-    if (meta->image_offset != OTA_IMAGE_OFFSET || meta->primary_limit != ota_primary_image_limit()) {
+    if (meta->image_offset != OTA_LAYOUT_STAGING_OFFSET ||
+        meta->primary_limit != OTA_LAYOUT_MAX_IMAGE_SIZE) {
         return false;
     }
-    if (meta->image_size == 0 ||
-        meta->image_size > ota_storage_capacity() ||
-        meta->image_size > ota_primary_image_limit()) {
+    if (meta->image_size == 0 || meta->image_size > OTA_LAYOUT_MAX_IMAGE_SIZE) {
         return false;
     }
     return true;
 }
 
-static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int bit = 0; bit < 8; bit++) {
-            uint32_t mask = 0u - (crc & 1u);
-            crc = (crc >> 1) ^ (0xEDB88320u & mask);
-        }
-    }
-    return ~crc;
-}
-
-static uint32_t crc32_buffer(const uint8_t *data, size_t len) {
-    return crc32_update(0u, data, len);
-}
-
-static void __no_inline_not_in_flash_func(ota_apply_reboot_from_ram)(void) {
-    watchdog_hw->ctrl &= ~WATCHDOG_CTRL_ENABLE_BITS;
-    psm_hw->wdsel = PSM_WDSEL_BITS & ~(PSM_WDSEL_ROSC_BITS | PSM_WDSEL_XOSC_BITS);
-    watchdog_hw->scratch[4] = 0;
-    watchdog_hw->ctrl |= WATCHDOG_CTRL_TRIGGER_BITS;
-    while (true) {
-        __asm volatile ("nop");
-    }
-}
-
-static void __no_inline_not_in_flash_func(ota_apply_flash_callback)(void *param) {
-    ota_apply_params_t *apply = (ota_apply_params_t *)param;
-    if (apply == NULL || apply->image_size == 0u || apply->image_size > OTA_PRIMARY_SLOT_BYTES) {
-        return;
-    }
-
-    const uint32_t image_size = apply->image_size;
-    const uint32_t program_size = OTA_ALIGN_UP(image_size, FLASH_PAGE_SIZE);
-    const uint32_t erase_size = OTA_ALIGN_UP(program_size, FLASH_SECTOR_SIZE);
-    volatile const uint8_t *source = (volatile const uint8_t *)(XIP_BASE + OTA_IMAGE_OFFSET);
-
-    for (uint32_t sector_offset = 0u; sector_offset < erase_size; sector_offset += FLASH_SECTOR_SIZE) {
-        flash_range_erase(sector_offset, FLASH_SECTOR_SIZE);
-
-        uint32_t sector_program_end = sector_offset + FLASH_SECTOR_SIZE;
-        if (sector_program_end > program_size) {
-            sector_program_end = program_size;
-        }
-
-        for (uint32_t dest_offset = sector_offset;
-             dest_offset < sector_program_end;
-             dest_offset += OTA_MAX_CHUNK_BYTES) {
-            uint32_t program_count = sector_program_end - dest_offset;
-            if (program_count > OTA_MAX_CHUNK_BYTES) {
-                program_count = OTA_MAX_CHUNK_BYTES;
-            }
-
-            for (uint32_t idx = 0u; idx < program_count; idx++) {
-                uint32_t image_idx = dest_offset + idx;
-                g_flash_page[idx] = image_idx < image_size ? source[image_idx] : 0xFFu;
-            }
-
-            flash_range_program(dest_offset, g_flash_page, program_count);
-        }
-    }
-
-    flash_range_erase(OTA_METADATA_OFFSET, FLASH_SECTOR_SIZE);
-    ota_apply_reboot_from_ram();
-}
-
+// The install itself happens in the bootloader after this reboot; the app
+// only records PENDING_INSTALL metadata and restarts cleanly.
 static void ota_apply_task(void *param) {
     (void)param;
 
     vTaskDelay(pdMS_TO_TICKS(OTA_APPLY_DELAY_MS));
-    int rc = flash_safe_execute(ota_apply_flash_callback,
-                                &g_ota_apply_params,
-                                UINT32_MAX);
-    if (rc != PICO_OK) {
-        snprintf(g_ota_session.last_error, sizeof(g_ota_session.last_error),
-                 "OTA apply could not enter flash-safe zone rc=%d", rc);
-        g_ota_apply_scheduled = false;
-    }
-
+    watchdog_reboot(0, 0, 0);
     vTaskDelete(NULL);
 }
 
@@ -319,6 +225,12 @@ static bool ota_flash_erase(uint32_t offset, uint32_t length) {
         return false;
     }
 
+    // The bootloader and app slot are never writable over OTA.
+    if (offset < OTA_LAYOUT_METADATA_OFFSET) {
+        ota_set_error("erase below the OTA region rejected");
+        return false;
+    }
+
     g_flash_op.kind = OTA_FLASH_OP_ERASE;
     g_flash_op.offset = offset;
     g_flash_op.length = length;
@@ -340,6 +252,12 @@ static bool ota_flash_program_page(uint32_t offset, const uint8_t *page) {
         return false;
     }
 
+    // The bootloader and app slot are never writable over OTA.
+    if (offset < OTA_LAYOUT_METADATA_OFFSET) {
+        ota_set_error("program below the OTA region rejected");
+        return false;
+    }
+
     g_flash_op.kind = OTA_FLASH_OP_PROGRAM;
     g_flash_op.offset = offset;
     g_flash_op.length = FLASH_PAGE_SIZE;
@@ -355,7 +273,8 @@ static bool ota_flash_program_page(uint32_t offset, const uint8_t *page) {
     return true;
 }
 
-static bool ota_write_metadata(uint32_t size, uint32_t expected_crc, uint32_t actual_crc) {
+static bool ota_write_metadata(uint32_t size, uint32_t expected_crc, uint32_t actual_crc,
+                               uint32_t state, uint32_t app_crc) {
     ota_metadata_t meta;
     memset(&meta, 0xFF, sizeof(meta));
     meta.magic = OTA_METADATA_MAGIC;
@@ -364,23 +283,57 @@ static bool ota_write_metadata(uint32_t size, uint32_t expected_crc, uint32_t ac
     meta.expected_crc32 = expected_crc;
     meta.actual_crc32 = actual_crc;
     meta.flags = OTA_METADATA_FLAG_VERIFIED;
-    meta.image_offset = OTA_IMAGE_OFFSET;
-    meta.primary_limit = ota_primary_image_limit();
+    meta.image_offset = OTA_LAYOUT_STAGING_OFFSET;
+    meta.primary_limit = OTA_LAYOUT_MAX_IMAGE_SIZE;
+    meta.state = state;
+    meta.boot_attempts = 0;
+    meta.app_crc32 = app_crc;
+    meta.struct_crc32 = ota_metadata_struct_crc(&meta);
 
-    if (!ota_flash_erase(OTA_METADATA_OFFSET, FLASH_SECTOR_SIZE)) {
+    if (!ota_flash_erase(OTA_LAYOUT_METADATA_OFFSET, FLASH_SECTOR_SIZE)) {
         return false;
     }
 
     memset(g_flash_page, 0xFF, sizeof(g_flash_page));
     memcpy(g_flash_page, &meta, sizeof(meta));
-    return ota_flash_program_page(OTA_METADATA_OFFSET, g_flash_page);
+    return ota_flash_program_page(OTA_LAYOUT_METADATA_OFFSET, g_flash_page);
 }
 
 static bool ota_invalidate_metadata(void) {
-    if (!ota_supported()) {
-        return false;
+    return ota_flash_erase(OTA_LAYOUT_METADATA_OFFSET, FLASH_SECTOR_SIZE);
+}
+
+// Called first thing in main(), before the scheduler or core 1 exist. If
+// the bootloader just installed this image (state TRYING), cancel the
+// bootloader's watchdog and mark the boot confirmed so the next reset is a
+// plain boot. Direct flash calls with interrupts off are safe here exactly
+// because nothing else is running yet; flash_safe_execute's multicore/RTOS
+// lockout machinery is not available (and not needed) this early.
+void ota_boot_confirm(void) {
+    ota_metadata_t meta;
+    memcpy(&meta, ota_metadata_flash(), sizeof(meta));
+
+    if (meta.magic != OTA_METADATA_MAGIC || meta.version != OTA_METADATA_VERSION ||
+        meta.struct_crc32 != ota_metadata_struct_crc(&meta) ||
+        meta.state != OTA_BOOT_STATE_TRYING) {
+        return;
     }
-    return ota_flash_erase(OTA_METADATA_OFFSET, FLASH_SECTOR_SIZE);
+
+    // Stop the 5 s trial-boot watchdog the bootloader armed before it can
+    // reset us mid-confirm.
+    watchdog_disable();
+
+    meta.state = OTA_BOOT_STATE_CONFIRMED;
+    meta.struct_crc32 = ota_metadata_struct_crc(&meta);
+
+    static uint8_t confirm_page[FLASH_PAGE_SIZE] __attribute__((aligned(4)));
+    memset(confirm_page, 0xFF, sizeof(confirm_page));
+    memcpy(confirm_page, &meta, sizeof(meta));
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    flash_range_erase(OTA_LAYOUT_METADATA_OFFSET, FLASH_SECTOR_SIZE);
+    flash_range_program(OTA_LAYOUT_METADATA_OFFSET, confirm_page, FLASH_PAGE_SIZE);
+    restore_interrupts(irq_state);
 }
 
 static void ota_send_json(struct fs_file *file, int payload_len) {
@@ -398,8 +351,26 @@ static void ota_send_json(struct fs_file *file, int payload_len) {
     file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
 }
 
+// Install state as reported to clients. "pending" and "trying" are only
+// ever visible briefly (before the apply reboot / before confirm ran).
+static const char *ota_boot_state_string(const ota_metadata_t *meta, bool meta_valid) {
+    if (!meta_valid) {
+        return "none";
+    }
+    switch (meta->state) {
+        case OTA_BOOT_STATE_PENDING_INSTALL:
+            return "pending";
+        case OTA_BOOT_STATE_TRYING:
+            return "trying";
+        case OTA_BOOT_STATE_CONFIRMED:
+            return "confirmed";
+        default:
+            return "none";
+    }
+}
+
 static bool ota_build_status_json(bool success, const char *message, bool include_error) {
-    const ota_metadata_t *meta = ota_supported() ? ota_metadata_flash() : NULL;
+    const ota_metadata_t *meta = ota_metadata_flash();
     bool meta_valid = ota_metadata_is_valid(meta);
     const char *last_error = include_error ? g_ota_session.last_error : "";
     if (last_error == NULL) {
@@ -421,6 +392,8 @@ static bool ota_build_status_json(bool success, const char *message, bool includ
              "\"transport\":\"rest_get_hex\","
              "\"apply_supported\":%s,"
              "\"bootloader_required\":%s,"
+             "\"bootloader_present\":true,"
+             "\"boot_state\":\"%s\","
              "\"active\":%s,"
              "\"verified\":%s,"
              "\"metadata_valid\":%s,"
@@ -440,15 +413,16 @@ static bool ota_build_status_json(bool success, const char *message, bool includ
              boolean_to_string(success),
              message,
              boolean_to_string(ota_supported()),
-             boolean_to_string(OTA_BOOTLOADER_APPLY_SUPPORTED != 0),
-             boolean_to_string(OTA_BOOTLOADER_APPLY_SUPPORTED == 0),
+             boolean_to_string(true),   // apply always supported under the bootloader
+             boolean_to_string(false),  // the bootloader is installed by definition
+             ota_boot_state_string(meta, meta_valid),
              boolean_to_string(g_ota_session.active),
              boolean_to_string(g_ota_session.verified),
              boolean_to_string(meta_valid),
              (unsigned long)PICO_FLASH_SIZE_BYTES,
              (unsigned long)ota_primary_image_limit(),
-             (unsigned long)OTA_METADATA_OFFSET,
-             (unsigned long)OTA_IMAGE_OFFSET,
+             (unsigned long)OTA_LAYOUT_METADATA_OFFSET,
+             (unsigned long)OTA_LAYOUT_STAGING_OFFSET,
              (unsigned long)ota_storage_capacity(),
              (unsigned long)g_ota_session.expected_size,
              (unsigned long)g_ota_session.received_size,
@@ -461,16 +435,22 @@ static bool ota_build_status_json(bool success, const char *message, bool includ
 }
 
 void ota_update_init(void) {
-    const ota_metadata_t *meta = ota_supported() ? ota_metadata_flash() : NULL;
-    printf("OTA: flash=%lu primary_limit=%lu staging=0x%08lX image=0x%08lX capacity=%lu supported=%s apply=%s staged=%s\n",
-           (unsigned long)PICO_FLASH_SIZE_BYTES,
-           (unsigned long)ota_primary_image_limit(),
-           (unsigned long)OTA_METADATA_OFFSET,
-           (unsigned long)OTA_IMAGE_OFFSET,
-           (unsigned long)ota_storage_capacity(),
-           ota_supported() ? "yes" : "no",
-           OTA_BOOTLOADER_APPLY_SUPPORTED ? "yes" : "no",
-           ota_metadata_is_valid(meta) ? "yes" : "no");
+    const ota_metadata_t *meta = ota_metadata_flash();
+    bool meta_valid = ota_metadata_is_valid(meta);
+
+    printf("OTA: bootloader layout app=0x%06lX/%lu staging=0x%06lX/%lu boot_state=%s\n",
+           (unsigned long)OTA_LAYOUT_APP_OFFSET,
+           (unsigned long)OTA_LAYOUT_APP_SLOT_SIZE,
+           (unsigned long)OTA_LAYOUT_STAGING_OFFSET,
+           (unsigned long)OTA_LAYOUT_STAGING_SIZE,
+           ota_boot_state_string(meta, meta_valid));
+
+    // Report and clear any breadcrumb the bootloader left behind.
+    uint32_t breadcrumb = watchdog_hw->scratch[3];
+    if ((breadcrumb & OTA_BREADCRUMB_MASK) == OTA_BREADCRUMB_BASE) {
+        printf("OTA: bootloader breadcrumb 0x%08lX\n", (unsigned long)breadcrumb);
+        watchdog_hw->scratch[3] = 0;
+    }
 }
 
 bool http_rest_ota_status(struct fs_file *file, int num_params, char *params[], char *values[]) {
@@ -590,7 +570,7 @@ bool http_rest_ota_chunk(struct fs_file *file, int num_params, char *params[], c
     }
 
     for (size_t page_offset = 0; page_offset < program_len; page_offset += FLASH_PAGE_SIZE) {
-        uint32_t flash_offset = OTA_IMAGE_OFFSET + offset + (uint32_t)page_offset;
+        uint32_t flash_offset = OTA_LAYOUT_STAGING_OFFSET + offset + (uint32_t)page_offset;
 
         if (((offset + page_offset) % FLASH_SECTOR_SIZE) == 0) {
             if (!ota_flash_erase(flash_offset, FLASH_SECTOR_SIZE)) {
@@ -616,7 +596,7 @@ bool http_rest_ota_chunk(struct fs_file *file, int num_params, char *params[], c
         return true;
     }
 
-    g_ota_session.actual_crc32 = crc32_update(g_ota_session.actual_crc32, flash_ptr, verify_len);
+    g_ota_session.actual_crc32 = ota_crc32_update(g_ota_session.actual_crc32, flash_ptr, verify_len);
     g_ota_session.received_size += (uint32_t)decoded_len;
     ota_clear_error();
 
@@ -644,7 +624,7 @@ bool http_rest_ota_finalize(struct fs_file *file, int num_params, char *params[]
         return true;
     }
 
-    uint32_t flash_crc = crc32_buffer(ota_image_flash(), g_ota_session.expected_size);
+    uint32_t flash_crc = ota_crc32(ota_image_flash(), g_ota_session.expected_size);
     g_ota_session.actual_crc32 = flash_crc;
 
     if (flash_crc != g_ota_session.expected_crc32) {
@@ -656,6 +636,8 @@ bool http_rest_ota_finalize(struct fs_file *file, int num_params, char *params[]
 
     if (!ota_write_metadata(g_ota_session.expected_size,
                             g_ota_session.expected_crc32,
+                            g_ota_session.actual_crc32,
+                            0xFFFFFFFFu,  // no install requested yet
                             g_ota_session.actual_crc32)) {
         ota_build_status_json(false, "metadata write failed", true);
         ota_send_json(file, (int)strlen(g_ota_response));
@@ -699,7 +681,6 @@ bool http_rest_ota_apply(struct fs_file *file, int num_params, char *params[], c
         return true;
     }
 
-#if OTA_BOOTLOADER_APPLY_SUPPORTED
     if (g_ota_apply_scheduled) {
         ota_build_status_json(true, "OTA apply already scheduled", true);
         ota_send_json(file, (int)strlen(g_ota_response));
@@ -707,17 +688,6 @@ bool http_rest_ota_apply(struct fs_file *file, int num_params, char *params[], c
     }
 
     uint32_t image_size = meta->image_size;
-    uint32_t program_size = OTA_ALIGN_UP(image_size, FLASH_PAGE_SIZE);
-    uint32_t erase_size = OTA_ALIGN_UP(program_size, FLASH_SECTOR_SIZE);
-    if (program_size == 0u ||
-        erase_size > OTA_METADATA_OFFSET ||
-        program_size > ota_primary_image_limit()) {
-        ota_set_error("staged firmware does not fit the primary slot");
-        ota_build_status_json(false, "staged firmware does not fit the primary slot", true);
-        ota_send_json(file, (int)strlen(g_ota_response));
-        return true;
-    }
-
     const uint8_t *image = ota_image_flash();
     if (ota_staged_image_has_container_magic(image, image_size)) {
         ota_set_error("staged file looks like UF2/ELF; upload app.bin for OTA");
@@ -726,7 +696,25 @@ bool http_rest_ota_apply(struct fs_file *file, int num_params, char *params[], c
         return true;
     }
 
-    uint32_t staged_crc = crc32_buffer(image, image_size);
+    // Vector table sanity: word 0 is the initial stack pointer, word 1 the
+    // reset handler. An app.bin built for the pre-bootloader layout has its
+    // reset vector below the app slot and must never be installed.
+    uint32_t initial_sp;
+    uint32_t reset_vector;
+    memcpy(&initial_sp, image, sizeof(initial_sp));
+    memcpy(&reset_vector, image + 4, sizeof(reset_vector));
+    if (initial_sp < OTA_SRAM_BASE || initial_sp > OTA_SRAM_END ||
+        reset_vector <= (XIP_BASE + OTA_LAYOUT_APP_OFFSET) ||
+        reset_vector >= (XIP_BASE + OTA_LAYOUT_APP_OFFSET + OTA_LAYOUT_APP_SLOT_SIZE)) {
+        ota_set_error("image is not linked for the bootloader app slot");
+        ota_build_status_json(false,
+                              "image is linked for the pre-bootloader layout; build current firmware",
+                              true);
+        ota_send_json(file, (int)strlen(g_ota_response));
+        return true;
+    }
+
+    uint32_t staged_crc = ota_crc32(image, image_size);
     if (staged_crc != meta->expected_crc32 || staged_crc != meta->actual_crc32) {
         ota_set_error("staged firmware CRC no longer matches metadata");
         ota_build_status_json(false, "staged firmware CRC check failed", true);
@@ -734,11 +722,16 @@ bool http_rest_ota_apply(struct fs_file *file, int num_params, char *params[], c
         return true;
     }
 
-    g_ota_apply_params.image_size = image_size;
-    g_ota_apply_params.expected_crc32 = meta->expected_crc32;
-    g_ota_apply_params.actual_crc32 = staged_crc;
-    g_ota_apply_scheduled = true;
+    // Hand the install to the bootloader: it copies staging into the app
+    // slot on the next boot and trial-boots the new image.
+    if (!ota_write_metadata(image_size, meta->expected_crc32, staged_crc,
+                            OTA_BOOT_STATE_PENDING_INSTALL, staged_crc)) {
+        ota_build_status_json(false, "could not record the install request", true);
+        ota_send_json(file, (int)strlen(g_ota_response));
+        return true;
+    }
 
+    g_ota_apply_scheduled = true;
     BaseType_t task_created = xTaskCreate(ota_apply_task,
                                           "OTA Apply",
                                           OTA_APPLY_TASK_STACK_WORDS,
@@ -754,15 +747,7 @@ bool http_rest_ota_apply(struct fs_file *file, int num_params, char *params[], c
     }
 
     ota_clear_error();
-    ota_build_status_json(true, "OTA apply scheduled; device will reboot shortly", true);
+    ota_build_status_json(true, "install scheduled; device reboots into the bootloader", true);
     ota_send_json(file, (int)strlen(g_ota_response));
     return true;
-#else
-    ota_set_error("verified image is staged, but this firmware has no OTA bootloader yet");
-    ota_build_status_json(false,
-                          "verified image staged; install an OTA bootloader transition build once to enable apply",
-                          true);
-    ota_send_json(file, (int)strlen(g_ota_response));
-    return true;
-#endif
 }

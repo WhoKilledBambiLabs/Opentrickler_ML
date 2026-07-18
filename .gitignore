@@ -91,6 +91,9 @@ collector_runtime_logs/
 __pycache__/
 *.pyc
 
+# Local Python virtual environment
+venv/
+
 # Local packaging and telemetry tools that are not published in this firmware repo
 dist/
 tools/field_data_kit/
@@ -103,3 +106,10 @@ firmware_release_history/**/manifest.json
 firmware_release_history/external_comparisons/
 firmware_release_history/legacy_artifacts.csv
 firmware_release_history/session_index.md
+
+# Claude Code
+CLAUDE.md
+.claude/settings.json
+
+# Factory reset flash memory tool
+!reset_flash/nuke_universal.uf2

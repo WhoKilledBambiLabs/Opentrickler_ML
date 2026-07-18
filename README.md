@@ -6,7 +6,7 @@ Public beta firmware for the OpenTrickler Raspberry Pi Pico 2 W / RP2350 control
 
 ## Project Status
 
-- Current beta identity: `2026.07.12-beta.11`
+- Current beta identity: `2026.07.15-beta.15`
 - Supported controller: Raspberry Pi Pico 2 W / RP2350 only
 - Unsupported controller: Raspberry Pi Pico W / RP2040
 - Repository status: public beta, early release
@@ -121,9 +121,13 @@ Key adjustable AI configuration parameters:
 
 Normal users should leave these defaults alone until they have a saved rollback model and enough repeatable test data to justify changing them.
 
-### OTA Staging
+### Bootloader-Managed OTA
 
-The firmware can stage an `app.bin` over Wi-Fi, validate CRC32, and apply it on supported flash layouts. USB UF2 flashing remains the safest first-install and rollback method.
+Firmware updates are installed by a small first-stage bootloader at the start of flash. An `app.bin` uploaded over Wi-Fi (web portal or `tools/ota_upload.py`) is staged in upper flash and CRC-verified; on reboot the bootloader copies it into the application slot and trial-boots it. The copy is power-loss-safe (it restarts on the next boot until it completes), the new firmware confirms its first successful boot, and after three failed boot attempts the bootloader drops the device into USB recovery (BOOTSEL) instead of boot-looping.
+
+The bootloader itself is only ever updated over USB, never by OTA.
+
+**Migration warning:** devices on beta 14 or earlier must be flashed once over USB with the new `app.uf2` (it carries the bootloader). Never upload this build's `app.bin` through an older device's OTA page — the old firmware would copy it to the wrong flash address and the device would need USB recovery.
 
 ## Creating A Profile
 
@@ -186,27 +190,37 @@ cmake --build build-pico2w-release --config Release
 
 Useful outputs:
 
-- `build-pico2w-release/app.uf2`: USB BOOTSEL flashing
-- `build-pico2w-release/app.bin`: OTA upload
+- `build-pico2w-release/app.uf2`: USB BOOTSEL flashing — combined image containing the bootloader, the application, and a cleared OTA metadata sector
+- `build-pico2w-release/app.bin`: OTA upload (application image linked for the app slot at flash 0x8000)
+- `build-pico2w-release/bootloader/bootloader.bin`: first-stage bootloader (USB-updated only, already inside app.uf2)
 - `build-pico2w-release/app.elf`: debug symbols
 - `build-pico2w-release/app.hex`: alternate flashing format
 
 ## Flashing And OTA
 
-USB first install or rollback:
+USB first install, one-time migration from beta 14 or earlier, or recovery:
 
 1. Disconnect motor power.
 2. Hold BOOTSEL while plugging in USB.
 3. Copy `app.uf2` to the `RPI-RP2` drive.
 4. Reboot and verify the firmware version.
 
-OTA after the device is already running OTA-capable firmware:
+The UF2 installs the bootloader at flash 0 and the application in its slot. Saved AI model history and EEPROM settings are preserved.
+
+Web OTA once the device runs bootloader-capable firmware:
+
+1. Open the web portal, Settings, then Firmware Update.
+2. Select the new `app.bin` (not the UF2).
+3. Press Upload & Install and leave the device powered.
+4. The device verifies the upload, reboots, the bootloader installs the image, and the page tracks progress until the new firmware confirms its first boot.
+
+Command line alternative:
 
 ```powershell
-python tools/ota_upload.py --host <device-ip-or-hostname> --bin build-pico2w-release/app.bin --apply
+python tools/ota_upload.py --host <device-ip-or-hostname> --bin build-pico2w-release/app.bin --apply --wait-for-boot
 ```
 
-Use USB rollback if OTA fails, Wi-Fi is unstable, or the version cannot be verified after reboot.
+If the new firmware fails to start three times, the bootloader puts the device into USB recovery (BOOTSEL) — flash `app.uf2` over USB to restore it. USB BOOTSEL flashing always recovers the device from any state.
 
 ## Repository Map
 
@@ -221,6 +235,10 @@ Use USB rollback if OTA fails, Wi-Fi is unstable, or the version cannot be verif
 - `targets/`: board and hardware target support.
 - `tests/`: local tests and validation material.
 - `tools/ota_upload.py`: Wi-Fi OTA uploader.
+- `bootloader/`: first-stage bootloader that installs staged OTA images.
+- `linker/`: linker scripts placing the bootloader and application in the OTA flash layout.
+- `src/ota_layout.h`: single source of truth for the flash map shared by the app, bootloader, and build scripts.
+- `scripts/make_combined_uf2.py`: builds the combined bootloader + application UF2.
 - `RELEASE_VERSION`: firmware release identity consumed by version generation.
 
 ## Safety Notes
